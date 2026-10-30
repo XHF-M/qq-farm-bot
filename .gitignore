@@ -37,6 +37,9 @@ Update.log
 .idea/
 .vscode/
 
+# Agent workspace (local notes, deploy artifacts, credentials)
+.workbuddy/
+
 # OS
 .DS_Store
 Thumbs.db
