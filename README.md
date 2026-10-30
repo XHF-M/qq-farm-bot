@@ -366,6 +366,7 @@ pnpm -C core exec tsx ../tools/audit-capture-compatibility.js <capture-dir>
 
 专题说明统一收录在 [`docs/`](docs/README.md)：
 
+- [代码逻辑总览](docs/code-architecture.md)
 - [工具脚本](docs/tools.md)
 - [网络并发模型](docs/network-concurrency.md)
 - [TSDK Node.js 运行约定](docs/tsdk-runtime.md)
