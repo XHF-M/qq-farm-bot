@@ -2,8 +2,9 @@ import type { Socket } from 'socket.io-client'
 import { useStorage } from '@vueuse/core'
 import { defineStore } from 'pinia'
 import { io } from 'socket.io-client'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import api, { getApiErrorMessage } from '@/api'
+import { useAccountStore } from '@/stores/account'
 
 // Define interfaces for better type checking
 interface DailyGift {
@@ -25,15 +26,19 @@ interface DailyGift {
   canClaim?: boolean | null
   result?: string
   lastError?: string
+  scheduledHour?: number
+  nextAt?: number
 }
 
 interface DailyGiftsResponse {
   date: string
+  timeZone?: string
   growth: DailyGift
   gifts: DailyGift[]
 }
 
 export const useStatusStore = defineStore('status', () => {
+  const accountStore = useAccountStore()
   const status = ref<any>(null)
   const logs = ref<any[]>([])
   const dailyGifts = ref<DailyGiftsResponse | null>(null)
@@ -47,6 +52,13 @@ export const useStatusStore = defineStore('status', () => {
   const realtimeLogsEnabled = ref(true)
   const currentRealtimeAccountId = ref('')
   const tokenRef = useStorage('admin_token', '')
+
+  const currentAccountConnected = computed(() => {
+    const accountId = String(accountStore.currentAccountId || '')
+    return !!accountId
+      && String(status.value?.accountId || '') === accountId
+      && !!status.value?.connection?.connected
+  })
 
   let socket: Socket | null = null
   let statusRequestSequence = 0
@@ -295,6 +307,7 @@ export const useStatusStore = defineStore('status', () => {
     loading,
     error,
     realtimeConnected,
+    currentAccountConnected,
     realtimeLogsEnabled,
     fetchStatus,
     fetchDiamond,

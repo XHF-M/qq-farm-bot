@@ -35,6 +35,7 @@ const SOILS: Record<number, { short: string, name: string }> = {
   3: { short: '黑土', name: '黑土地' },
   4: { short: '金土', name: '金土地' },
   5: { short: '紫金', name: '紫金土地' },
+  6: { short: '蓝晶', name: '蓝晶土地' },
 }
 const level = computed(() => {
   const lv = Number(land.value.level) || 0
@@ -106,7 +107,7 @@ const needs = computed(() => {
   ].filter(Boolean) as Array<{ key: string, icon: string, title: string }>
 })
 
-const failedMutantIcons = ref(new Set<number>())
+const failedMutantIcons = ref(new Set<string>())
 
 const traits = computed(() => {
   if (isFollower.value || isLocked.value || isEmpty.value)
@@ -124,11 +125,26 @@ const traits = computed(() => {
     if (!name)
       continue
     const desc = String(effect?.description || effect?.desc || '').trim()
+    const collections = id === 18 && Array.isArray(effect.collections) ? effect.collections : []
+    for (const collection of collections) {
+      const key = `m${id}:${collection.seriesId}:${collection.itemId}`
+      list.push({
+        key,
+        kind: 'mutant',
+        image: failedMutantIcons.value.has(key) ? '' : safeImage(String(collection.image || '')),
+        icon: 'i-carbon-trophy',
+        title: `藏品变异 · ${collection.name}`,
+      })
+    }
+    if (collections.length)
+      continue
+    const key = `m${id}${name}`
     list.push({
-      key: `m${id}${name}`,
+      key,
       kind: 'mutant',
-      image: id > 0 && !failedMutantIcons.value.has(id) ? `/game-config/seed_images_named/mutant/${id}.png` : '',
-      icon: 'i-carbon-star',
+      // 官方配置的藏品图标仍指向奶茶；没有具体藏品时显示通用藏品标记。
+      image: id > 0 && id !== 18 && !failedMutantIcons.value.has(key) ? `/game-config/seed_images_named/mutant/${id}.png` : '',
+      icon: id === 18 ? 'i-carbon-trophy' : 'i-carbon-star',
       title: desc ? `变异 · ${name}：${desc}` : `变异 · ${name}`,
     })
   }
@@ -158,9 +174,7 @@ const hiddenTitle = computed(() => hiddenTags.value.map(item => item.title).join
 const allTitle = computed(() => allTags.value.map(item => item.title).join('\n'))
 
 function markMutantFailed(key: string) {
-  const id = Number(/^m(\d+)/.exec(key)?.[1]) || 0
-  if (id > 0)
-    failedMutantIcons.value = new Set(failedMutantIcons.value).add(id)
+  failedMutantIcons.value = new Set(failedMutantIcons.value).add(key)
 }
 
 const interactive = computed(() => props.selectable || props.openable)
@@ -373,7 +387,7 @@ const ariaLabel = computed(() => {
   color: var(--soil-ink);
   background: var(--soil-chip);
   font-size: 10px;
-  font-weight: 700;
+  font-weight: var(--fw-700);
   line-height: 16px;
   white-space: nowrap;
 }
@@ -384,7 +398,7 @@ const ariaLabel = computed(() => {
   margin-left: auto;
   color: var(--soil-ink);
   font-size: 10px;
-  font-weight: 700;
+  font-weight: var(--fw-700);
   font-variant-numeric: tabular-nums;
 }
 .plot__check {
@@ -442,7 +456,7 @@ const ariaLabel = computed(() => {
   margin-top: 4px;
   overflow: hidden;
   font-size: 12px;
-  font-weight: 650;
+  font-weight: var(--fw-650);
   line-height: 16px;
   text-align: center;
   text-overflow: ellipsis;
@@ -462,7 +476,7 @@ const ariaLabel = computed(() => {
   gap: 3px;
   color: var(--ui-warning);
   font-size: 11px;
-  font-weight: 700;
+  font-weight: var(--fw-700);
   font-variant-numeric: tabular-nums;
 }
 .plot__state {
@@ -474,7 +488,7 @@ const ariaLabel = computed(() => {
   padding: 0 7px;
   border-radius: 999px;
   font-size: 10px;
-  font-weight: 700;
+  font-weight: var(--fw-700);
   line-height: 18px;
   white-space: nowrap;
 }
@@ -493,7 +507,7 @@ const ariaLabel = computed(() => {
 .plot__state.is-muted {
   color: var(--ui-subtle);
   padding: 0;
-  font-weight: 500;
+  font-weight: var(--fw-500);
 }
 
 .plot__bar {
@@ -604,7 +618,7 @@ const ariaLabel = computed(() => {
   color: var(--ui-muted);
   background: color-mix(in srgb, var(--ui-ink) 8%, transparent);
   font-size: 10px;
-  font-weight: 700;
+  font-weight: var(--fw-700);
   line-height: 18px;
   cursor: help;
   font-variant-numeric: tabular-nums;
@@ -663,5 +677,14 @@ const ariaLabel = computed(() => {
   .plot__bar i {
     transition: none;
   }
+}
+.plot--lv6 {
+  --soil-bg: #eef8fd;
+  --soil-line: #b5d9eb;
+  --soil-ink: #367caa;
+  --soil-chip: #d7edf8;
+}
+.dark .plot--lv6 {
+  --soil-tint: #82bddf;
 }
 </style>

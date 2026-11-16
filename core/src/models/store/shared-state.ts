@@ -5,6 +5,7 @@ const { DEFAULT_TIME_ZONE, normalizeTimeZone, resolveClientVersion } = require('
 const { getDataFile, ensureDataDir } = require('../../config/runtime-paths');
 const { createConfigStorage } = require('./config-storage');
 const { storageError } = require('../../services/json-db');
+const { parseHourOfDay } = require('../../utils/hour-of-day');
 
 const STORE_FILE: string = getDataFile('store.json');
 const ACCOUNTS_FILE: string = getDataFile('accounts.json');
@@ -21,7 +22,8 @@ const PUSHOO_CHANNELS: Set<string> = new Set([
 ]);
 
 const DEFAULT_FERTILIZER_LAND_TYPES: FertilizerLandType[] = ['purple-gold', 'gold', 'black', 'red', 'normal'];
-const FERTILIZER_LAND_TYPE_SET: Set<string> = new Set(DEFAULT_FERTILIZER_LAND_TYPES);
+const ALL_FERTILIZER_LAND_TYPES: FertilizerLandType[] = ['blue-crystal', ...DEFAULT_FERTILIZER_LAND_TYPES];
+const FERTILIZER_LAND_TYPE_SET: Set<string> = new Set(ALL_FERTILIZER_LAND_TYPES);
 const INTERVAL_MAX_SEC: number = 86400;
 const DEFAULT_KNOWN_FRIEND_GID_SYNC_COOLDOWN_SEC: number = 300;
 const DEFAULT_FRIENDS_LIST_CACHE_TTL_SEC: number = 60;
@@ -48,6 +50,7 @@ const DEFAULT_LOGIN_SETTINGS: LoginSettings = {
 const DEFAULT_ACCOUNT_CONFIG: AccountConfig = {
     automation: {
         farm: true,
+        farm_harvest_tiangong: true,
         farm_push: true,
         land_upgrade: true,
         friend: true,
@@ -116,6 +119,7 @@ const DEFAULT_ACCOUNT_CONFIG: AccountConfig = {
     fertilizerBuyNormalCount: 1,
     fertilizerBuyNormalThresholdHours: 10,
     fertilizerBuyCheckIntervalMinutes: 60,
+    emailClaimHour: 10,
     bagSeedPriority: [],
     bagSeedMultiLandReservationEnabled: false,
     bagSeedLandTypes: {},
@@ -153,6 +157,10 @@ function normalizeFriendsListCacheTtlSec(input: unknown, fallback: number = DEFA
     const value = Number.parseInt(input as string, 10);
     const base = Number.isFinite(value) ? value : fallback;
     return Math.max(10, Math.min(INTERVAL_MAX_SEC, base));
+}
+
+function normalizeEmailClaimHour(input: unknown, fallback: number = DEFAULT_ACCOUNT_CONFIG.emailClaimHour): number {
+    return parseHourOfDay(input) ?? parseHourOfDay(fallback) ?? DEFAULT_ACCOUNT_CONFIG.emailClaimHour;
 }
 
 function normalizeAutoAcceptFriendMinLevel(input: unknown, fallback: number = 0): number {
@@ -202,7 +210,7 @@ function normalizeBagSeedLandTypes(input: unknown): Record<string, FertilizerLan
             if (types.includes(type as FertilizerLandType)) continue;
             types.push(type as FertilizerLandType);
         }
-        if (types.length === 0 || types.length === DEFAULT_FERTILIZER_LAND_TYPES.length) continue;
+        if (types.length === 0 || types.length === ALL_FERTILIZER_LAND_TYPES.length) continue;
         normalized[String(seedId)] = types;
     }
     return normalized;
@@ -315,6 +323,7 @@ function cloneAccountConfig(base: Partial<AccountConfig> = DEFAULT_ACCOUNT_CONFI
         fertilizerBuyNormalCount: Math.max(0, Math.min(10000, Number(base.fertilizerBuyNormalCount) || 0)),
         fertilizerBuyNormalThresholdHours: Math.max(0, Math.min(990, Number(base.fertilizerBuyNormalThresholdHours) || 0)),
         fertilizerBuyCheckIntervalMinutes: Math.max(1, Math.min(1440, Number(base.fertilizerBuyCheckIntervalMinutes) || 30)),
+        emailClaimHour: normalizeEmailClaimHour(base.emailClaimHour, DEFAULT_ACCOUNT_CONFIG.emailClaimHour),
         bagSeedPriority: normalizeBagSeedPriority(base.bagSeedPriority),
         bagSeedMultiLandReservationEnabled: base.bagSeedMultiLandReservationEnabled !== undefined
             ? !!base.bagSeedMultiLandReservationEnabled
@@ -408,7 +417,7 @@ function normalizeAccountConfig(input: unknown, fallback: AccountConfig = accoun
     }
 
     if (src.stealDelaySeconds !== undefined && src.stealDelaySeconds !== null) {
-        cfg.stealDelaySeconds = Math.max(0, Math.min(300, Number.parseInt(src.stealDelaySeconds, 10) || 0));
+        cfg.stealDelaySeconds = Math.max(0, Math.min(300, Number(src.stealDelaySeconds) || 0));
     }
 
     if (src.plantOrderRandom !== undefined && src.plantOrderRandom !== null) {
@@ -437,6 +446,10 @@ function normalizeAccountConfig(input: unknown, fallback: AccountConfig = accoun
 
     if (src.fertilizerBuyCheckIntervalMinutes !== undefined && src.fertilizerBuyCheckIntervalMinutes !== null) {
         cfg.fertilizerBuyCheckIntervalMinutes = Math.max(1, Math.min(1440, Number(src.fertilizerBuyCheckIntervalMinutes) || 30));
+    }
+
+    if (src.emailClaimHour !== undefined && src.emailClaimHour !== null) {
+        cfg.emailClaimHour = normalizeEmailClaimHour(src.emailClaimHour, cfg.emailClaimHour);
     }
 
     if (src.bagSeedPriority !== undefined && src.bagSeedPriority !== null) {
@@ -627,6 +640,7 @@ module.exports = {
     normalizeKnownFriendGids,
     normalizeKnownFriendGidSyncCooldownSec,
     normalizeFriendsListCacheTtlSec,
+    normalizeEmailClaimHour,
     normalizeBagSeedPriority,
     normalizeBagSeedLandTypes,
     normalizeBagSeedFallbackStrategy,

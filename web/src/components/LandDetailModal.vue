@@ -85,6 +85,10 @@ function format(value: unknown) {
             <span>解锁第 {{ info.prerequisite.landId }} 块土地</span>
             <strong :class="info.prerequisite.met ? 'land-detail-improved' : 'land-detail-missing'">{{ info.prerequisite.met ? '已满足' : '未满足' }}</strong>
           </div>
+          <div v-if="info.precedingLands" class="land-detail-condition">
+            <span>{{ info.precedingLands.name }}及以上达到 {{ info.precedingLands.required }} 块</span>
+            <strong :class="info.precedingLands.met === true ? 'land-detail-improved' : 'land-detail-missing'">{{ info.precedingLands.owned ?? '—' }} / {{ info.precedingLands.required }}</strong>
+          </div>
           <div v-if="info.current && info.next" class="land-detail-condition">
             <span>当前地块为{{ info.current.name }}</span><span class="land-detail-improved">已满足</span>
           </div>
@@ -149,7 +153,7 @@ function format(value: unknown) {
 }
 .land-detail-metrics th:first-child {
   text-align: left;
-  font-weight: 500;
+  font-weight: var(--fw-500);
   opacity: 0.7;
 }
 .land-detail-metrics thead {
@@ -164,7 +168,7 @@ function format(value: unknown) {
 }
 .land-detail-requirements h3 {
   margin: 0 0 12px;
-  font-weight: 700;
+  font-weight: var(--fw-700);
 }
 .land-detail-condition {
   display: flex;
@@ -211,7 +215,7 @@ function format(value: unknown) {
   border-radius: 12px;
   background: rgba(69, 155, 93, 0.12);
   color: #278452;
-  font-weight: 600;
+  font-weight: var(--fw-600);
 }
 @media (max-width: 360px) {
   .land-detail-metrics th,
