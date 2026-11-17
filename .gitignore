@@ -40,6 +40,9 @@ Update.log
 # Agent workspace (local notes, deploy artifacts, credentials)
 .workbuddy/
 
+# Deploy credentials (never commit real values)
+**/.deploy.env
+
 # OS
 .DS_Store
 Thumbs.db
