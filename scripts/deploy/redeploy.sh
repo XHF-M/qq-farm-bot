@@ -35,6 +35,11 @@ die()  { err "$*"; echo "日志: $LOG"; echo "__REDEPLOY_DONE__ rc=1"; exit 1; }
 
 START_TS=$(date +%s)
 
+# 记录自身 pid，供本机判断「任务是否还在跑」，避免重复启动并行构建
+PID_FILE="${PID_FILE:-/tmp/redeploy.pid}"
+echo $$ > "$PID_FILE" 2>/dev/null || true
+trap 'rm -f "$PID_FILE"' EXIT
+
 step "0/7 环境检查"
 [ -d "$APP_DIR/.git" ] || die "$APP_DIR 不是 git 仓库"
 cd "$APP_DIR" || die "无法进入 $APP_DIR"
@@ -81,13 +86,23 @@ if [ "$VERIFY_ONLY" -eq 0 ]; then
   if [ "$SKIP_BUILD" -eq 0 ]; then
     step "4/7 构建镜像（1.6G 机型首次约 20 分钟，有缓存约 5-8 分钟）"
     BUILD_LOG="/tmp/build-${TS}.log"
+    BUILD_TS=$(date +%s)
     docker compose build >"$BUILD_LOG" 2>&1 &
     BUILD_PID=$!
     # 边跑边汇报关键节点，避免长时间无输出让人以为卡死
+    LAST_SEEN=""
+    BEAT=0
     while kill -0 "$BUILD_PID" 2>/dev/null; do
-      sleep 20
-      LAST=$(grep -E '^#[0-9]+ \[' "$BUILD_LOG" | tail -1)
-      [ -n "$LAST" ] && echo "  ... $LAST"
+      sleep 15
+      BEAT=$((BEAT + 15))
+      LAST=$(grep -E '^#[0-9]+ ' "$BUILD_LOG" | tail -1)
+      if [ -n "$LAST" ] && [ "$LAST" != "$LAST_SEEN" ]; then
+        echo "  ... ${LAST:0:110}"
+        LAST_SEEN="$LAST"
+      elif [ "$BEAT" -ge 30 ]; then
+        echo "  ... 构建中，已 $(( $(date +%s) - BUILD_TS ))s（当前节点未变）"
+        BEAT=0
+      fi
     done
     wait "$BUILD_PID"
     BUILD_RC=$?

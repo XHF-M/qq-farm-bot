@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import time
@@ -34,11 +35,37 @@ CONF_CANDIDATES = (HERE / ".deploy.env", ROOT / ".workbuddy" / "deploy" / ".depl
 LOCAL_SCRIPT = HERE / "redeploy.sh"
 REMOTE_SCRIPT = "/root/servers/redeploy.sh"
 REMOTE_LOG = "/tmp/redeploy-current.log"
+REMOTE_PID = "/tmp/redeploy.pid"
 DONE_MARK = "__REDEPLOY_DONE__"
-IDLE_TIMEOUT = 30 * 60     # 30 分钟无新输出视为卡死
+IDLE_TIMEOUT = 40 * 60     # 40 分钟无新输出视为卡死（首次构建最慢约 22 分钟）
+BEAT_EVERY = 30            # 无新输出时每隔多少秒报一次心跳
 
+# ---------------------------------------------------------------- 终端颜色
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def _enable_ansi() -> bool:
+    """Windows 10+ 的 cmd 需要显式打开 VT 处理，否则转义码会显示成乱码。"""
+    if os.name != "nt":
+        return sys.stdout.isatty()
+    if not sys.stdout.isatty():
+        return False
+    try:
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        handle = k32.GetStdHandle(-11)
+        mode = ctypes.c_uint32()
+        if not k32.GetConsoleMode(handle, ctypes.byref(mode)):
+            return False
+        return bool(k32.SetConsoleMode(handle, mode.value | 0x0004))
+    except Exception:                                     # noqa: BLE001
+        return False
+
+
+COLOR = _enable_ansi()
 C_RED, C_GRN, C_CYN, C_YEL, C_BLD, C_RST = (
-    "\033[31m", "\033[32m", "\033[36m", "\033[33m", "\033[1m", "\033[0m")
+    ("\033[31m", "\033[32m", "\033[36m", "\033[33m", "\033[1m", "\033[0m")
+    if COLOR else ("",) * 6)
 
 
 def say(msg: str) -> None:
@@ -78,6 +105,7 @@ def load_conf() -> dict[str, str]:
     return conf
 
 
+# ---------------------------------------------------------------- 本机 git
 def git(args: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(["git", *args], cwd=ROOT, text=True, capture_output=True,
                           encoding="utf-8", errors="replace", check=False)
@@ -112,6 +140,7 @@ def local_pull(branch: str) -> None:
             ok("本地改动已恢复")
 
 
+# ---------------------------------------------------------------- SSH 交互
 def connect(conf: dict[str, str]) -> paramiko.SSHClient:
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -121,55 +150,115 @@ def connect(conf: dict[str, str]) -> paramiko.SSHClient:
     return client
 
 
+def run_channel(client: paramiko.SSHClient, cmd: str,
+                settle: float = 8.0) -> tuple[str, bool]:
+    """执行命令并读走输出。
+
+    **不能用 out.read()**：后台守护进程可能继承 SSH 通道的 fd，
+    通道永远不 EOF，read() 会一直阻塞到超时。
+    这里改成非阻塞收数据 + 静默 settle 秒后主动结束。
+    """
+    chan = client.get_transport().open_session()
+    chan.settimeout(2.0)
+    chan.exec_command(cmd)
+    chunks: list[bytes] = []
+    deadline = time.time() + settle
+    while time.time() < deadline:
+        if chan.recv_ready():
+            chunks.append(chan.recv(65536))
+            deadline = time.time() + settle
+            continue
+        if chan.exit_status_ready():
+            while chan.recv_ready():
+                chunks.append(chan.recv(65536))
+            break
+        time.sleep(0.15)
+    finished = chan.exit_status_ready()
+    chan.close()
+    return b"".join(chunks).decode("utf-8", "replace"), finished
+
+
 def sh(client: paramiko.SSHClient, cmd: str) -> tuple[str, int]:
     _in, out, _err = client.exec_command(cmd, timeout=60)
     text = out.read().decode("utf-8", "replace")
     return text, out.channel.recv_exit_status()
 
 
+def deploy_alive(client: paramiko.SSHClient) -> bool:
+    out, _ = run_channel(
+        client, f"test -f {REMOTE_PID} && kill -0 $(cat {REMOTE_PID}) 2>/dev/null "
+                f"&& echo alive || echo dead", settle=3)
+    return "alive" in out
+
+
 def start_remote(client: paramiko.SSHClient, app_dir: str, branch: str,
-                 extra: list[str]) -> None:
-    """用 setsid 后台起任务，SSH 立刻返回；进度靠日志轮询。"""
-    say("启动服务器部署任务（后台运行，断线不影响）")
+                 extra: list[str]) -> bool:
+    """用 setsid 后台起任务，读走极少输出后立刻返回；进度靠日志轮询。
+
+    返回 False 表示未启动新任务（已有任务在跑，直接接管进度）。
+    """
+    say("启动服务器部署任务")
+    if deploy_alive(client):
+        warn("服务器上已有部署任务在跑，不重复启动（1.6G 机器并行构建会互相拖死）")
+        ok("直接接管它的进度")
+        return False
+
     script_args = " ".join(extra)
+    # 双重 fork：外包子 shell 立刻退出，孙进程的 stdout/stderr 指向日志，
+    # 不占用 SSH 通道 → 本机不会卡在“已连接但没输出”。
+    inner = (f"cd /root/servers && exec env APP_DIR={app_dir} BRANCH={branch} "
+             f"LOG={REMOTE_LOG} setsid bash {REMOTE_SCRIPT} {script_args}")
     cmd = (
-        f"mkdir -p /root/servers && "
-        f"test -f /tmp/redeploy-current.log && cp /tmp/redeploy-current.log "
-        f"/tmp/redeploy-$(date +%Y%m%d-%H%M%S).log || true; "
+        f"mkdir -p /root/servers; "
+        f"cp -f {REMOTE_LOG} /tmp/redeploy-$(date +%Y%m%d-%H%M%S).log 2>/dev/null; "
         f": > {REMOTE_LOG}; "
-        f"cd /root/servers && "
-        f"APP_DIR={app_dir} BRANCH={branch} LOG={REMOTE_LOG} "
-        f"setsid nohup bash {REMOTE_SCRIPT} {script_args} >> {REMOTE_LOG} 2>&1 < /dev/null & "
-        f"disown $! 2>/dev/null; sleep 1; echo started"
+        f"( {inner} >> {REMOTE_LOG} 2>&1 < /dev/null & ) ; "
+        f"echo launched"
     )
-    out, rc = sh(client, cmd)
-    if rc != 0 or "started" not in out:
-        sys.exit(f"任务启动失败（rc={rc}）：{out}")
-    ok("已启动，开始跟进日志")
+    out, _ = run_channel(client, cmd, settle=3)
+    if "launched" not in out:
+        sys.exit(f"任务启动失败，服务器返回：{out.strip() or '(空)'}")
+
+    # 确认真的跑起来了：pid 文件出现 / 日志有首行
+    for _ in range(15):
+        time.sleep(1)
+        if deploy_alive(client):
+            ok("已启动，开始跟进日志")
+            return True
+        out, _ = run_channel(client, f"wc -c < {REMOTE_LOG} 2>/dev/null || echo 0", settle=2)
+        if out.strip().isdigit() and int(out.strip()) > 0:
+            ok("已启动，开始跟进日志")
+            return True
+    warn("已在服务器启动，但 15 秒内没检测到输出，继续跟进")
+    return True
 
 
 def follow(client: paramiko.SSHClient) -> int:
-    """SFTP 增量读日志，直到出现 DONE 标记。"""
+    """SFTP 增量读日志（二进制 + 行缓冲），直到出现 DONE 标记。"""
     sftp = client.open_sftp()
     offset = 0
-    last_size, last_change = 0, time.time()
-    rc = 1
+    buf = b""
+    rc: int | None = None
+    last_data = time.time()
+    next_beat = time.time() + BEAT_EVERY
     try:
-        while True:
+        while rc is None:
             try:
-                st = sftp.stat(REMOTE_LOG)
-                size = st.st_size
+                size = sftp.stat(REMOTE_LOG).st_size
             except IOError:
                 size = 0
-            if size != last_size:
-                last_size, last_change = size, time.time()
+
             if size > offset:
-                with sftp.open(REMOTE_LOG, "r") as fh:
+                with sftp.open(REMOTE_LOG, "rb") as fh:
                     fh.seek(offset)
-                    chunk = fh.read(size - offset)
+                    buf += fh.read(size - offset)
                 offset = size
-                text = chunk.decode("utf-8", "replace") if isinstance(chunk, bytes) else chunk
-                for line in text.splitlines():
+                last_data = time.time()
+                next_beat = time.time() + BEAT_EVERY
+
+                *lines, buf = buf.split(b"\n")
+                for raw in lines:
+                    line = ANSI_RE.sub("", raw.decode("utf-8", "replace").rstrip("\r"))
                     if line.startswith(DONE_MARK):
                         try:
                             rc = int(line.split("rc=")[1].strip())
@@ -178,12 +267,30 @@ def follow(client: paramiko.SSHClient) -> int:
                         print()
                         return rc
                     print(line, flush=True)
-            elif time.time() - last_change > IDLE_TIMEOUT:
-                warn("30 分钟没有新输出，可能卡住了。服务器上看：tail -f " + REMOTE_LOG)
-                return 1
-            time.sleep(2)
+            else:
+                now = time.time()
+                if now - last_data > IDLE_TIMEOUT:
+                    bad(f"{IDLE_TIMEOUT // 60} 分钟没有新输出，可能卡住了")
+                    print(f"    服务器上看：tail -f {REMOTE_LOG}")
+                    return 1
+                if now > next_beat:
+                    print(f"{C_YEL}  ... 仍在执行，已静默 {int(now - last_data)} 秒"
+                          f"（日志 {size} 字节）{C_RST}", flush=True)
+                    next_beat = now + BEAT_EVERY
+                    # 任务进程没了又没写 DONE，说明被 OOM / 信号杀掉
+                    if not deploy_alive(client):
+                        print(f"    进程已退出且没有结束标记，最后 15 行：")
+                        print(ansi_free_tail(client))
+                        return 1
+            time.sleep(1.5)
     finally:
         sftp.close()
+    return rc if rc is not None else 1
+
+
+def ansi_free_tail(client: paramiko.SSHClient) -> str:
+    out, _ = sh(client, f"tail -15 {REMOTE_LOG} 2>/dev/null")
+    return "\n".join("    " + ANSI_RE.sub("", ln) for ln in out.splitlines())
 
 
 def main() -> int:
@@ -214,7 +321,7 @@ def main() -> int:
             try:
                 client.open_sftp().stat("/root/servers")
             except IOError:
-                client.exec_command("mkdir -p /root/servers")[1].read()
+                sh(client, "mkdir -p /root/servers")
             sftp = client.open_sftp()
             sftp.put(str(LOCAL_SCRIPT), REMOTE_SCRIPT)
             sftp.chmod(REMOTE_SCRIPT, 0o755)

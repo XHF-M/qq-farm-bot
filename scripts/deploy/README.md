@@ -42,20 +42,27 @@ Windows 上也可以直接双击仓库根目录的 `redeploy.bat`。
 
 ## 为什么断线也能跑完
 
-服务器端用 `setsid nohup` 后台执行，**SSH 掉线、关窗口、关电脑都不影响**部署。
+服务器端用 `setsid` 后台执行，**SSH 掉线、关窗口、关电脑都不影响**部署。
 本机 `redeploy.py` 只做日志增量轮询（SFTP 按 offset 续读 `/tmp/redeploy-current.log`），
 脚本结尾写 `__REDEPLOY_DONE__ rc=<0|1>` 作为结束标记。
 重跑 `--attach` 接着看进度即可。
+
+服务器脚本会把自身 pid 写进 `/tmp/redeploy.pid`。本机启动前先查这个 pid：
+**已有任务在跑就不再起第二个**（1.6G 机器上并行构建会互相拖死），直接接管进度。
 
 ## 已知坑（都已在内置兜底）
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
+| 本机卡在「启动服务器部署任务」60 秒后超时 | `out.read()` 等 channel EOF，而后台守护进程继承了通道 fd，EOF 永远不来 | 改为非阻塞 `recv` + 双重 fork，孙进程输出直连日志，不占通道 |
+| 长时间无输出像是卡死 | 构建阶段一层 layer 要跑十几分钟 | 本机每 30 秒打一次心跳（静默秒数 + 日志字节数），服务器每 15 秒报当前 layer |
+| 连点两次 / 重跑脚本发起两个构建 | 没有互斥 | `/tmp/redeploy.pid` + `kill -0` 判断，自动接管而非重复启动 |
 | `docker compose up -d` 卡几分钟，容器停在 `Created` | 1.6G 内存机型上 compose 偶发无响应 | `timeout 600` + 3 次重试 + `docker start` 兜底 |
 | 构建后仍跑旧镜像 | compose 认为 tag 未变 | 构建后强制 `--force-recreate`（数据卷保留） |
 | `NPM_REGISTRY` 每次部署后丢失 | `.env` 被 git 跟踪，`reset --hard` 会覆盖 | 第 4 步幂等补回 |
 | 公网 502 但容器 healthy | nginx 缓存了旧容器 IP | 第 7 步自动 `nginx -s reload` |
 | 构建卡在 pnpm / vite 不推进 | swap 没开，纯换页抖动 | 第 1 步自动补 2G swap |
+| cmd 窗口里日志是 `←[36m` 乱码 | cmd 默认不开 VT 处理 | 启动时用 `SetConsoleMode` 开 VT，失败则自动关闭颜色并剥掉远端转义码 |
 
 ## 部署后
 
