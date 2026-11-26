@@ -11,7 +11,14 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { getResourcePath } = require('./runtime-paths');
 const { isSellConditionSatisfied } = require('./sell-conditions');
-const { getActivityCropName } = require('./activity-crops');
+const {
+    getActivityCropName,
+    getActivityCropBySeedId,
+    getActivityCropByPlantId,
+    getActivityItemById,
+    getActivityItemImage,
+    getActivityItems,
+} = require('./activity-crops');
 
 interface RoleLevelItem {
     level: number;
@@ -162,6 +169,47 @@ let illustratedConfig: IllustratedConfigItem[] | null = null;
 const illustratedItemMap = new Map<number, IllustratedConfigItem>();
 let buffConfig: BuffConfigItem[] | null = null;
 const buffConfigMap = new Map<number, BuffConfigItem>();
+
+/**
+ * 活动道具（红薯种子 / 红薯 / 黄金·红薯）不在 ItemInfo.json 里，这里合成一份
+ * 同形状的条目，让所有「按 id 查名称 / 图标 / 分类」的调用点自动拿到正确结果，
+ * 而不是各自兜底成「物品40307」。
+ *
+ * sells 一律留空：活动道具的售价只认服务端协议下发，不给本地配置凭空开出售卖入口。
+ */
+const activityItemInfoMap = new Map<number, ItemInfo>();
+
+function registerActivityItems(): void {
+    for (const entry of getActivityItems()) {
+        const id = Number(entry.id) || 0;
+        if (id <= 0 || itemInfoMap.has(id)) continue;
+        activityItemInfoMap.set(id, {
+            id,
+            type: Number(entry.type) || 0,
+            name: entry.name,
+            interaction_type: Number(entry.type) === 5 ? 'plant' : '',
+            sells: null,
+            sell_cond: null,
+            cond_sells: null,
+            level: null,
+            target_id: 0,
+            asset_name: '',
+            icon_res: '',
+            max_count: 9999,
+            max_own: 9999,
+            duration: null,
+            can_use: 0,
+            desc: '',
+            effectDesc: '',
+            trait_id: 0,
+            layer: 0,
+            rarity: Number(entry.type) === 17 ? 5 : 1,
+            rarity_color: null,
+            jumps: '',
+            ware_scale: null,
+        });
+    }
+}
 
 // 官方活动说明确认：变异 13 为鹊羽活动效果，收获时会额外获得鹊羽。
 // 运行时 MutantEffect 暂未下发 tips/description，因此在展示 DTO 层补充说明。
@@ -379,7 +427,11 @@ function getPlantName(plantId: number): string {
 
 function getPlantNameBySeedId(seedId: number): string {
     const plant = seedToPlant.get(seedId);
-    return plant ? plant.name : `种子${seedId}`;
+    if (plant) return plant.name;
+    // 活动作物种子不在 Plant.json 里，用补录表兜底，避免出现「种子20307」
+    const activityName = getActivityCropBySeedId(seedId)?.name;
+    if (activityName) return activityName;
+    return `种子${seedId}`;
 }
 
 function getPlantGrowTime(plantId: number): number {
@@ -437,7 +489,11 @@ function getPlantExp(plantId: number): number {
 
 function getFruitName(fruitId: number): string {
     const plant = fruitToPlant.get(fruitId);
-    return plant ? plant.name : `果实${fruitId}`;
+    if (plant) return plant.name;
+    // 活动作物果实不在 Plant.json 里，用补录表兜底，避免出现「果实40307」
+    const activityName = getActivityItemById(fruitId)?.name;
+    if (activityName) return activityName;
+    return `果实${fruitId}`;
 }
 
 function getPlantByFruitId(fruitId: number): PlantItem | undefined {
@@ -479,11 +535,17 @@ function getItemImageById(itemId: number): string {
         imageId = iconImageIds.get(getItemImageKey(item, 'icon_res'))
             || assetImageIds.get(getItemImageKey(item, 'asset_name')) || 0;
     }
+    if (!imageId) {
+        // 活动道具没有官方配置可查，用补录表里的静态资源。
+        const activityImage = getActivityItemImage(id);
+        if (activityImage) return activityImage;
+    }
     return imageId ? `/game-config/seed_images_named/seed_images/${imageId}.png` : '';
 }
 
 function getItemById(itemId: number): ItemInfo | undefined {
-    return itemInfoMap.get(Number(itemId) || 0);
+    const id = Number(itemId) || 0;
+    return itemInfoMap.get(id) || activityItemInfoMap.get(id);
 }
 
 function getShopGoodsById(goodsId: number) {
@@ -700,6 +762,9 @@ function getIllustratedBuffs(): any[] {
  * mutant_effect_plant 格式示例：5:1120112:1;5_6:1129001:1。
  * 多效果组合优先于单效果，避免黄金+活动变异退化成普通黄金作物。
  */
+// 变异 5 = 黄金，活动作物没有 Plant 条目，只能靠补录表映射到黄金版作物。
+const GOLDEN_MUTANT_ID = 5;
+
 function getMutantDisplayPlantId(plantId: number | string, mutantIds: Array<number | string> | undefined | null): number {
     const numericPlantId = Number(plantId) || 0;
     if (!Array.isArray(mutantIds) || mutantIds.length === 0) return numericPlantId;
@@ -728,11 +793,19 @@ function getMutantDisplayPlantId(plantId: number | string, mutantIds: Array<numb
         currentPlantId = bestMatch.targetId;
         visited.add(currentPlantId);
     }
+    // 活动作物在 Plant.json 里没有 mutant_effect_plant，黄金变异走补录表映射。
+    if (currentPlantId === numericPlantId) {
+        const goldenPlantId = Number(getActivityCropByPlantId(numericPlantId)?.goldenPlantId) || 0;
+        if (goldenPlantId > 0 && activeIds.has(GOLDEN_MUTANT_ID) && !visited.has(goldenPlantId)) {
+            return goldenPlantId;
+        }
+    }
     return currentPlantId;
 }
 
-// 启动时加载配置
+// 启动时加载配置：官方配置优先，活动补录只补 ItemInfo 里没有的 ID
 loadConfigs();
+registerActivityItems();
 
 module.exports = {
     loadConfigs,

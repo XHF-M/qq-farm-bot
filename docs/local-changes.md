@@ -208,6 +208,56 @@ cd core && npx tsc -p tsconfig.json --incremental false
 
 ---
 
+## 活动道具名称/贴图补录（红薯种子 / 红薯 / 黄金·红薯）
+
+配套上一节：作物侧修好后，**背包（批量出售）**里仍然出现三张一眼假的卡：
+
+```text
+物品20307   （有图，因为 20307.png 已在本地，但名字没兜底）
+物品40307   ×5 张（含变异·迷藏/爱心/冰冻），无图 → 「物」占位
+物品1040307 ×2 张（变异·黄金），无图 → 「物」占位
+```
+
+根因同一条：这三个 ID 都不在 `ItemInfo.json` 里，而所有「按 ID 查名字/图标/分类」的
+调用点都走 `getItemById()` / `getItemImageById()`，取不到就各自兜成 `物品${id}`、空图。
+
+### 改动
+
+| 路径 | 性质 | 说明 |
+| --- | --- | --- |
+| `core/src/config/activity-crops.ts` | 扩展 | 新增 `ActivityItemOverride` + `ACTIVITY_ITEM_LIST`；作物补录加 `fruitId` / `goldenPlantId` / `goldenItemId` / `goldenName` |
+| `core/src/config/gameConfig.ts` | 挂载点 | `getItemById()` 查不到时返回合成的 `ItemInfo`；`getItemImageById()` 末尾回落到补录图；`getPlantNameBySeedId()` / `getFruitName()` 各自接补录表；`getMutantDisplayPlantId()` 补「活动作物 + 变异 5 → 黄金版作物」映射 |
+| `core/src/gameConfig/seed_images_named/seed_images/40307.png` | 新增 | 红薯果实图（复用 1020307.png 的画） |
+| `core/src/gameConfig/seed_images_named/seed_images/1040307.png` | 新增 | 黄金·红薯图（由 1020307.png 做金属金调色） |
+| `core/tests/activity-crop-display.test.js` | 扩展 | 断言三件道具的 name/type/image 与黄金作物名映射，并锁住「活动种子不进 getAllSeeds」 |
+
+### 关键取舍
+
+- **在 `getItemById()` 里兜，而不是逐个 DTO 改**：背包、仓库、活动中心、礼包、赠送
+  一共 60+ 个调用点都读 `getItemById(id)?.name`，集中兜一次全部生效，也不会漏。
+- **合成条目 `sells: null`**：活动道具的售价只认服务端协议下发，不给本地配置凭空
+  开一个出售入口（`getEffectiveSellInfo` 因此返回 `unavailable`，与原行为一致）。
+- **`type` 必须填对**：背包按 `itemType` 分「果实 / 超变果实 / 种子」三个 Tab，
+  填 6 / 17 / 5 之后分类、可锁定、排序全部自动正确。
+- **`getAllSeeds()` 仍然不含活动种子**：补录只进 `activityItemInfoMap`，不进
+  `seedToPlant`，自动种植策略不会去消耗活动种子。
+
+### 复核
+
+```bash
+cd core && npx tsc --noEmit && npx tsc && node --test tests/activity-crop-display.test.js
+```
+
+DTO 层可直接用假 `BagReply` 跑一遍（不需要登录），预期输出：
+
+```text
+   40307 红薯        | category fruit  | type 6  | image .../40307.png
+ 1040307 黄金·红薯   | category mutant | type 17 | image .../1040307.png
+   20307 红薯种子     | category seed   | type 5  | image .../20307.png
+```
+
+---
+
 ## 统计
 
 ```bash
