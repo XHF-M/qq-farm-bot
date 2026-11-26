@@ -22,6 +22,16 @@
 const express = require('express');
 const { resolveAdvertiseAddresses } = require('./ip-utils');
 
+/**
+ * 创建抓包 REST API。
+ *
+ * 显式标注返回类型：`app` 用 `any` 切断对 express 类型包的引用。
+ * 本项目运行时是 express@4，但 `@types/express` 声明为 5.x，
+ * 不注解时 declaration emit 会报 TS2742（类型无法被 portable 地命名）。
+ *
+ * @param {{ config?: object, ca?: object, sessionStore?: object, proxyManager?: object, log?: Function }} [deps]
+ * @returns {{ app: any, start: () => Promise<any>, handleApiRequest: Function, getCaCertDer: Function }}
+ */
 function createCaptureApi({ config, ca, sessionStore, proxyManager, log = () => {} } = {}) {
   const startedAt = Date.now();
 
