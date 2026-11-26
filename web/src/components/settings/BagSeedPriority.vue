@@ -4,7 +4,7 @@ import api from '@/api'
 
 const props = defineProps<{ accountId: string | number }>()
 const priority = defineModel<number[]>({ required: true })
-interface Seed { seedId: number, name: string, count: number, image?: string }
+interface Seed { seedId: number, name: string, count: number, image?: string, plantSize?: number }
 const seeds = ref<Seed[]>([])
 const loading = ref(false)
 const error = ref('')
@@ -42,8 +42,14 @@ async function refresh() {
       return
     if (!res.data.ok)
       throw new Error(res.data.error || '读取背包失败')
-    seeds.value = res.data.data.seeds
-    priority.value = [...priority.value, ...res.data.data.priority.filter((id: number) => !priority.value.includes(id))]
+    const inventory = res.data.data
+    if (!Array.isArray(inventory))
+      throw new Error('背包种子列表格式错误')
+
+    const singleTileSeeds = inventory.filter((seed: Seed) => (seed.plantSize ?? 1) === 1)
+    const newIds = singleTileSeeds.map(seed => seed.seedId).filter(id => !priority.value.includes(id))
+    seeds.value = singleTileSeeds
+    priority.value = [...priority.value, ...newIds]
   }
   catch (e) {
     if (request === requestId)
