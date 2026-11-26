@@ -373,6 +373,9 @@ pnpm -C core exec tsx ../tools/audit-capture-compatibility.js <capture-dir>
 
 专题说明统一收录在 [`docs/`](docs/README.md)：
 
+- [代码逻辑总览](docs/code-architecture.md)
+- [Fork 同步与推送](docs/fork-sync.md)
+- [本地改动与上游同步指南](docs/local-change-guide.md)
 - [工具脚本](docs/tools.md)
 - [网络并发模型](docs/network-concurrency.md)
 - [TSDK Node.js 运行约定](docs/tsdk-runtime.md)
@@ -382,6 +385,7 @@ pnpm -C core exec tsx ../tools/audit-capture-compatibility.js <capture-dir>
 - [神秘商人、游戏商城与购买协议](docs/shop-protocols.md)
 - [好友宠物缓存与每日同步](docs/friend-pet-cache.md)
 - [个人页宠物协议](docs/pet-protocols.md)
+- [牧场玩法自动化评估](docs/ranch-automation-20261116.md)
 
 ## 免责声明
 

@@ -37,6 +37,9 @@ Update.log
 # WorkBuddy local workspace memory
 .workbuddy/
 
+# Deploy credentials (never commit real values)
+**/.deploy.env
+
 # OS
 .DS_Store
 Thumbs.db
@@ -60,3 +63,8 @@ protocol-captures/
 
 # Python caches
 __pycache__/
+
+/runtime/
+/releases/
+/packages/*/dist/
+.turbo/
