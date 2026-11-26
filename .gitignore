@@ -62,3 +62,9 @@ protocol-captures/
 /releases/
 /packages/*/dist/
 .turbo/
+
+# WorkBuddy local workspace memory
+.workbuddy/
+
+# Local deploy credentials (never commit)
+**/.deploy.env
