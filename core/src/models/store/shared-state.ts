@@ -85,7 +85,7 @@ const DEFAULT_ACCOUNT_CONFIG: AccountConfig = {
         yishu_claim_commission: false,
         yishu_sell_fallback_own: false,
         yishu_scan_friend_limit: 20,
-        yishu_scan_interval_minutes: 30,
+        yishu_scan_interval_minutes: 120,
         yishu_sell_min_count: 1,
         // 空串 = 不限时段；填 "HH:MM" 就等过了这个点才卖。
         yishu_sell_after_time: '',

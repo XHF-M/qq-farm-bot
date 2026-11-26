@@ -11,6 +11,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { getResourcePath } = require('./runtime-paths');
 const { isSellConditionSatisfied } = require('./sell-conditions');
+const { getActivityCropName } = require('./activity-crops');
 
 interface RoleLevelItem {
     level: number;
@@ -369,7 +370,11 @@ function getPlantBySeedId(seedId: number): PlantItem | undefined {
 
 function getPlantName(plantId: number): string {
     const plant = plantMap.get(plantId);
-    return plant ? plant.name : `植物${plantId}`;
+    if (plant) return plant.name;
+    // 活动临时作物不在 Plant.json 里，用补录表兜底，避免界面出现「植物1020307」
+    const activityName = getActivityCropName(plantId);
+    if (activityName) return activityName;
+    return `植物${plantId}`;
 }
 
 function getPlantNameBySeedId(seedId: number): string {

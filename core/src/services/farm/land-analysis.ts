@@ -16,6 +16,7 @@ const {
     getMutantEffectsByIds,
     getMutantDisplayPlantId,
 } = require('../../config/gameConfig');
+const { getActivityCropByPlantId } = require('../../config/activity-crops');
 const { toNum, toTimeSec, getServerTimeSec, log, logWarn } = require('../../utils/utils');
 
 const MATURE_PHASE_RECORD_ID = 19;
@@ -367,8 +368,11 @@ function buildLandDetail(land: any, options: { friendMode?: boolean; landsMap?: 
         : 0;
     const displayPlantId = getMutantDisplayPlantId(plantId, mutantConfigIds);
     const plantName = getPlantName(displayPlantId) || getPlantName(plantId) || plant.name || '未知';
+    // 活动临时作物没有 Plant.json 条目，seed_id / 贴图都要走补录表，
+    // 否则卡片会退化成占位小芽。
+    const activityCrop = getActivityCropByPlantId(displayPlantId) || getActivityCropByPlantId(plantId);
     const plantCfg = getPlantById(plantId);
-    const seedId = toNum(plantCfg?.seed_id);
+    const seedId = toNum(plantCfg?.seed_id) || Number(activityCrop?.seedId) || 0;
     const plantSize = Math.max(1, toNum(plantCfg?.size) || toNum(sourceLand?.land_size) || landSize || 1);
     const totalSeason = Math.max(1, toNum(plantCfg?.seasons) || 1);
     const currentSeasonRaw = toNum(plant.season);
@@ -398,7 +402,7 @@ function buildLandDetail(land: any, options: { friendMode?: boolean; landsMap?: 
         displayPlantId,
         plantName,
         seedId,
-        seedImage: seedId > 0 ? getSeedImageBySeedId(seedId) : '',
+        seedImage: (seedId > 0 ? getSeedImageBySeedId(seedId) : '') || String(activityCrop?.image || ''),
         phaseName: currentPhase.phaseName || PHASE_NAMES[phaseVal] || '',
         currentSeason,
         totalSeason,
