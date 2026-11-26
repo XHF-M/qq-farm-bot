@@ -20,19 +20,21 @@
 | Fork 同步文档 | 见 git log | `docs/fork-sync.md` | 无 | 纯新增 |
 | 本地改动指南 + 台账 | 见 git log | `docs/local-change-guide.md`、`docs/local-changes.md` | 无 | 纯新增 |
 | 一键重部署脚本（本机调度 + 服务器构建验证） | 见 git log | `scripts/deploy/*`、`redeploy.bat` | 无 | 纯新增 |
-| 上游迁移到 `muyuewang/qq-farm-bot-404` | `9fc8e2b` | 全仓库基线替换；重放上述自有文件 | 无 | 基线替换 |
-| 修 TS2742：`createCaptureApi` 返回类型注解 | `748ed8f` | `core/src/capture/api-server.js`（函数声明上方 JSDoc） | 函数 `createCaptureApi` 前的 `@returns` 注解；上游若改成 TS 或修好 `@types/express` 版本即可删掉 | **代码补丁** |
+| 上游迁移到 `muyuewang/qq-farm-bot-404` | `9fc8e2b` | 全仓库基线替换；重放上述自有文件 | 无 | **已回退** |
+| 修 TS2742：`createCaptureApi` 返回类型注解 | `748ed8f` | `core/src/capture/api-server.js`（函数声明上方 JSDoc） | 随 muyuewang 基线一起移除 | **已废弃** |
+| 基线切回 `liyangpengs/qq-farm-bot` 最后版本 | `18d6445` | 全仓库基线替换（`5049f69f`）；重放上述自有文件 | 无 | 基线替换 |
 
-> 说明：除最后一条外，其余全部为**文档与独立脚本**，没有修改任何上游源码，因此**零冲突风险**。
+> 说明：除已废弃的 TS2742 补丁外，其余全部为**文档与独立脚本**，没有修改任何上游源码，因此**零冲突风险**。
 > 后续新增有代码改动的功能时，请务必填写「挂载点」列。
 >
-> 2026-11-26 迁移后，上游基线为 `muyuewang/qq-farm-bot-404` 的 `main`；旧上游 `liyangpengs` 已停更。
+> 2026-11-26 回切后，上游基线为 `liyangpengs/qq-farm-bot` 的 `master` @ `5049f69f`
+> （作者已于 2026-11-25 宣布停更）。备选分支 `muyuewang/qq-farm-bot-404` 的定制
+> （以薯换福、图鉴自动化、精简架构）**未并入**。
 > 迁移细节见 [fork-sync.md](fork-sync.md#上游迁移记录)。
 >
-> **TS2742 补丁背景**：上游 `core/package.json` 声明 `@types/express@^5.0.6`，而运行时是 `express@4`。
-> `tsc` 生成 `.d.ts` 时无法 portable 地命名 `express-serve-static-core` 的推断类型，`pnpm -C core build:ts` 直接失败，
-> 导致 `docker compose build` 在 core-builder 阶段中断。给函数加显式 `@returns` 注解（`app: any`）即可切断类型引用。
-> 上游若把 `@types/express` 降到 4.x，本补丁可删。
+> **TS2742 补丁（已废弃）**：当时上游 `core/package.json` 声明 `@types/express@^5.0.6`，运行时是 `express@4`，
+> `tsc` 生成 `.d.ts` 时无法命名 `express-serve-static-core` 的推断类型导致构建中断。
+> 该文件（`core/src/capture/api-server.js`）只存在于 muyuewang 分支，回切后无需此补丁。
 
 ---
 
