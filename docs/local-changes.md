@@ -19,9 +19,14 @@
 | 一键部署脚本（Docker + nginx + TLS） | `e6d722f` | `deploy/*`、`.gitignore` | 无 | 纯新增 |
 | Fork 同步文档 | 见 git log | `docs/fork-sync.md` | 无 | 纯新增 |
 | 本地改动指南 + 台账 | 见 git log | `docs/local-change-guide.md`、`docs/local-changes.md` | 无 | 纯新增 |
+| 一键重部署脚本（本机调度 + 服务器构建验证） | 见 git log | `scripts/deploy/*`、`redeploy.bat` | 无 | 纯新增 |
+| 上游迁移到 `muyuewang/qq-farm-bot-404` | `9fc8e2b` | 全仓库基线替换；重放上述自有文件 | 无 | 基线替换 |
 
 > 说明：以上全部为**文档与独立脚本**，没有修改任何上游源码，因此**零冲突风险**。
 > 后续新增有代码改动的功能时，请务必填写「挂载点」列。
+>
+> 2026-11-26 迁移后，上游基线为 `muyuewang/qq-farm-bot-404` 的 `main`；旧上游 `liyangpengs` 已停更。
+> 迁移细节见 [fork-sync.md](fork-sync.md#上游迁移记录)。
 
 ---
 

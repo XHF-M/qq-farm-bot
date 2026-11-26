@@ -1,14 +1,19 @@
 # Fork 同步与推送
 
-本仓库是 [liyangpengs/qq-farm-bot](https://github.com/liyangpengs/qq-farm-bot) 的 fork，
+本仓库跟随 [muyuewang/qq-farm-bot-404](https://github.com/muyuewang/qq-farm-bot-404) 更新，
 自有改动推送到 [XHF-M/qq-farm-bot](https://github.com/XHF-M/qq-farm-bot)。
 GitHub 的 fork **不会**自动跟随上游，需要手动同步。
+
+> 2026-11-26 上游迁移：原上游 `liyangpengs/qq-farm-bot` 已停更，改用同源 fork
+> `muyuewang/qq-farm-bot-404`（`main` 分支）。两者的历史提交 hash 不共享，
+> 因此切换时采用的是「基线替换 + 重放本地文件」，不是 `merge`。详见文末「上游迁移记录」。
 
 ## remote 布局
 
 | remote | 地址 | 用途 |
 | --- | --- | --- |
-| `origin` | `git@github.com:liyangpengs/qq-farm-bot.git` | 上游，只 `fetch`，不要直接推 |
+| `origin` | `git@github.com:liyangpengs/qq-farm-bot.git` | 旧上游，已停更，只作历史参考 |
+| `muyuewang` | `https://github.com/muyuewang/qq-farm-bot-404.git` | **当前上游**（`main`），只 `fetch`，不要直接推 |
 | `fork` | `git@github.com:XHF-M/qq-farm-bot.git` | 自己的 fork，所有推送目标 |
 
 确认现状：
@@ -23,16 +28,16 @@ git branch -vv
 以下命令均在仓库根目录执行：
 
 ```bash
-git fetch origin                          # 拉上游，不改工作区
-git log --oneline HEAD..origin/master     # 看上游新增了哪些提交
-git merge origin/master                   # 合并到本地 master
-git push fork master                      # 推到自己的 fork
+git fetch muyuewang                                  # 拉上游，不改工作区
+git log --oneline HEAD..muyuewang/main               # 看上游新增了哪些提交
+git merge muyuewang/main                             # 合并到本地 master
+git push fork master                                 # 推到自己的 fork
 ```
 
 一行版本：
 
 ```bash
-git fetch origin && git merge origin/master && git push fork master
+git fetch muyuewang && git merge muyuewang/main && git push fork master
 ```
 
 > 必须用 `merge`，**不要用 `reset --hard`**。fork 上有自有提交（文档、部署脚本），
@@ -41,7 +46,7 @@ git fetch origin && git merge origin/master && git push fork master
 ## 只看有没有更新
 
 ```bash
-git fetch origin && git rev-list --count HEAD..origin/master
+git fetch muyuewang && git rev-list --count HEAD..muyuewang/main
 ```
 
 - 输出 `0`：上游没有新提交，不用同步。
@@ -80,7 +85,7 @@ git merge --abort
 ## 网页方式（应急）
 
 打开 `https://github.com/XHF-M/qq-farm-bot`，页面顶部提示
-`This branch is N commits behind liyangpengs:master` 时点 **Sync fork** → **Update branch**。
+`This branch is N commits behind muyuewang:main` 时点 **Sync fork** → **Update branch**。
 
 有冲突时网页无法自动合并，会提示你需要手动处理，此时回到本地按上面的冲突处理流程走。
 
@@ -98,3 +103,38 @@ git merge --abort
 1. `git status` 确认没有把运行数据、日志、`.workbuddy/` 带进去（已在 `.gitignore` 中忽略）。
 2. 不要在脚本默认值里写真实域名、服务器地址或凭据，用 `example.com` 之类的占位符。
 3. `git diff` 通读一遍再 commit。
+
+## 上游迁移记录
+
+### 2026-11-26：`liyangpengs/qq-farm-bot` → `muyuewang/qq-farm-bot-404`
+
+原上游停更。新上游是同源 fork，分支为 `main`，已包含旧上游 PR#187 及之后的「以薯换福」活动。
+
+两边**不共享提交 hash**（新上游把旧提交重新落了一遍），`git merge-base` 停在 PR#134，
+直接 `merge` 会产生大量假冲突。因此采用基线替换：
+
+```bash
+git tag backup-<日期> master                  # 先打备份
+git fetch muyuewang --no-tags                 # 拉新上游（仓库大，耐心等）
+git reset --hard muyuewang/main               # 切到新基线
+git checkout -- .                             # 必做：Windows 下 reset 可能漏写文件
+git checkout backup-<日期> -- deploy/ scripts/deploy/ redeploy.bat docs/<本地文档>.md
+# 再手工把 .gitignore / README.md / docs/README.md 的本地增量贴回
+git commit -m "chore: 切换上游"
+git push --force-with-lease fork master       # 历史重写，必须 force
+```
+
+重放清单（本仓库自有、上游没有的文件）：
+
+| 路径 | 说明 |
+| --- | --- |
+| `deploy/` | Docker + nginx + TLS 一键部署脚本 |
+| `scripts/deploy/` | 重部署脚本（`redeploy.py` / `redeploy.sh`） |
+| `redeploy.bat` | Windows 双击入口 |
+| `docs/code-architecture.md`、`docs/fork-sync.md`、`docs/local-change-guide.md`、`docs/local-changes.md`、`docs/ranch-automation-20261116.md` | 本地专题文档 |
+
+另：`scripts/deploy/.deploy.env`（明文服务器凭据）在 `reset` 时会被连同目录一起删掉，
+升级前先备份到 `.workbuddy/deploy/.deploy.env`，或直接从该处复制回来。
+
+服务器端同步方式不变：`git remote set-url origin https://github.com/XHF-M/qq-farm-bot.git`，
+`BRANCH` 保持 `master`。
