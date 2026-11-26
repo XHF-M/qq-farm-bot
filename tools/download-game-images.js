@@ -25,6 +25,11 @@ function printUsage() {
     console.log(`用法：
   node tools/download-game-images.js
   node tools/download-game-images.js --input <JSON目录> --output <图片目录> --source <反编译源码目录>
+  node tools/download-game-images.js --input <JSON目录> --cdn-server <CDN基址> --bundle-version <bundle=版本,...>
+
+抓包模式（不需要反编译源码）：
+  --cdn-server       CDN 根地址，例如 https://cdn.example.com/res/
+  --bundle-version   bundle 版本，可写 mainscene=abc123,native=def456；只写版本号时默认 bundle 为 mainscene
 
 参数：
   --input <dir>         ItemInfo.json 和 Plant.json 所在目录
@@ -55,6 +60,8 @@ function parseArgs(argv) {
         source: DEFAULT_SOURCE,
         concurrency: DEFAULT_CONCURRENCY,
         retries: DEFAULT_RETRIES,
+        cdnServer: '',
+        bundleVersion: '',
     };
     for (let i = 0; i < argv.length; i += 1) {
         const arg = argv[i];
@@ -62,14 +69,19 @@ function parseArgs(argv) {
             printUsage();
             process.exit(0);
         }
-        if (!['--input', '--output', '--source', '--concurrency', '--retries'].includes(arg)) {
+        if (!['--input', '--output', '--source', '--concurrency', '--retries', '--cdn-server', '--bundle-version'].includes(arg)) {
             throw new Error(`未知参数: ${arg}`);
         }
         const value = argv[++i];
         if (!value || value.startsWith('--')) throw new Error(`${arg} 缺少参数`);
         if (arg === '--concurrency') options.concurrency = parseIntegerOption(value, arg, 1, 32);
         else if (arg === '--retries') options.retries = parseIntegerOption(value, arg, 0, 10);
+        else if (arg === '--cdn-server') options.cdnServer = value;
+        else if (arg === '--bundle-version') options.bundleVersion = value;
         else options[arg.slice(2)] = path.resolve(value);
+    }
+    if (Boolean(options.cdnServer) !== Boolean(options.bundleVersion)) {
+        throw new Error('--cdn-server 与 --bundle-version 必须同时提供');
     }
     return options;
 }
@@ -168,6 +180,32 @@ function readSettings(sourceDir) {
         remoteBundles.push({ name: bundle, version });
     }
     return { filePath, server: serverUrl.href, remoteBundles };
+}
+
+/**
+ * 抓包模式：直接从命令行构造 settings，跳过反编译源码目录。
+ * --bundle-version 支持 `mainscene=abc,native=def`，只给版本号时默认 mainscene。
+ */
+function settingsFromCli(cdnServer, bundleVersionSpec) {
+    const serverUrl = new URL(cdnServer);
+    if (serverUrl.protocol !== 'https:') throw new Error(`CDN 地址必须使用 HTTPS: ${cdnServer}`);
+    if (!serverUrl.pathname.endsWith('/')) serverUrl.pathname += '/';
+    const remoteBundles = [];
+    const seen = new Set();
+    for (const part of String(bundleVersionSpec).split(',')) {
+        const text = part.trim();
+        if (!text) continue;
+        const sep = text.indexOf('=');
+        const name = sep >= 0 ? text.slice(0, sep).trim() : 'mainscene';
+        const version = sep >= 0 ? text.slice(sep + 1).trim() : text;
+        if (!/^[A-Za-z0-9_-]+$/.test(name)) throw new Error(`无效 bundle 名: ${name}`);
+        if (!/^[A-Za-z0-9_-]+$/.test(version)) throw new Error(`无效 bundle 版本: ${version}`);
+        if (seen.has(name)) throw new Error(`重复 bundle: ${name}`);
+        seen.add(name);
+        remoteBundles.push({ name, version });
+    }
+    if (remoteBundles.length === 0) throw new Error('--bundle-version 未提供有效值');
+    return { filePath: '(命令行 --cdn-server)', server: serverUrl.href, remoteBundles };
 }
 
 function requestBuffer(url, maxBytes, redirectCount = 0, expectedOrigin = null) {
@@ -780,7 +818,9 @@ async function main() {
     const startedAt = new Date().toISOString();
     const options = parseArgs(process.argv.slice(2));
     const inputs = loadInputs(options.input);
-    const settings = readSettings(options.source);
+    const settings = options.cdnServer
+        ? settingsFromCli(options.cdnServer, options.bundleVersion)
+        : readSettings(options.source);
     console.log(`[输入] ItemInfo=${inputs.itemInput.value.length}, Plant=${inputs.plantInput.value.length}, 总 ID=${inputs.itemInput.value.length + inputs.plantInput.value.length}`);
     console.log(`[配置] settings: ${settings.filePath}`);
     console.log(`[配置] CDN: ${settings.server}`);

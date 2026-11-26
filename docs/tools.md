@@ -7,6 +7,8 @@
 | 脚本 | 用途 |
 | --- | --- |
 | `download-game-config.js` | 从微信小程序 CDN 定位、下载并校验游戏 JSON 配置 |
+| `sniff-asset-urls.js` | 自带 MITM 代理，记录客户端真实请求的资源 URL（免第三方抓包工具） |
+| `extract-cdn-from-capture.js` | 从抓包导出（HAR / URL 文本）提取 CDN 基址与 bundle 版本，免反编译 |
 | `download-game-images.js` | 根据游戏配置和 Cocos manifest 下载准确的 PNG 资源 |
 | `decode-latest-protocols.js` | 解码选定的 WebSocket 抓包并保留未知 protobuf 字段 |
 | `analyze-keepalive-capture.js` | 只输出非敏感的版本、心跳和 Gateway Token 形态统计 |
@@ -14,6 +16,123 @@
 | `audit-qingmei-flow.js` | 按时间顺序输出青梅活动抓包的精简审计记录 |
 
 所有命令均在仓库根目录执行。
+
+## 用自带代理嗅探资源 URL（不装第三方抓包工具）
+
+官方贴图按 bundle 版本 hash 组织：
+
+```text
+<server>/remote/plant/config.<版本>.json            ← 版本号只能从真实请求里拿
+<server>/remote/plant/native/<xx>/<uuid>.<hash>.astc ← 贴图本体
+```
+
+`remote/plant/config.json`、`version.manifest`、`project.manifest` 全部 404，CDN 也不开目录列举，
+所以**必须有一次性客户端流量**才能拿到版本号。`sniff-asset-urls.js` 就是为这一步准备的极简代理：
+
+- 只解密 `*.qq.com` / `*.gtimg.com` / `*.qpic.cn`，其他域名走原始 TCP 隧道
+- **只记录请求 URL，不落盘请求/响应正文**
+- 自动用本机 openssl 生成根 CA 和多 SAN 通配证书，放在 `.capture/certs/`（已在 `.gitignore`）
+- 顺带提供证书下载页和手机配置说明
+
+### 用法
+
+```bash
+node tools/sniff-asset-urls.js                 # 默认端口 18000
+node tools/sniff-asset-urls.js --port 18001    # 换端口
+node tools/sniff-asset-urls.js --reset         # 重新生成 CA 与证书
+```
+
+启动后终端会打印内网地址，例如：
+
+```text
+监听端口   : 18000
+内网地址   : 192.168.1.107:18000
+CA 证书    : http://192.168.1.107:18000/ca.crt
+```
+
+### 手机侧
+
+1. 手机连**与本机相同的 WiFi**
+2. WiFi 高级设置 → 手动代理 → 服务器填上面 IP，端口 `18000`
+3. 浏览器打开 `http://<IP>:18000/`，Android 下 `ca.der`、iOS 下 `ca.crt`，下载并安装、信任
+4. 打开 QQ → 农场，玩到能看到目标作物（如红薯）地块，停留 30 秒
+5. 回到终端 `Ctrl+C`，日志在 `.capture/asset-urls.log`
+
+### 输出
+
+```text
+2026-11-26T08:26:27.432Z ASSET https://cdn-resource.nqf.qq.com/release/remote/extraRes/config.c384c.json
+2026-11-26T08:26:30.118Z ASSET https://cdn-resource.nqf.qq.com/release/remote/plant/native/ab/ab12....astc
+```
+
+`ASSET` 行即静态资源。日志可直接喂给下一步：
+
+```bash
+node tools/extract-cdn-from-capture.js --text .capture/asset-urls.log
+```
+
+### 注意
+
+- 抓完**务必关掉手机代理**，否则手机会一直走本机网络
+- Android 上部分 App 不信任用户安装的 CA，表现为开了代理就断网；遇到就把代理关掉，改用「手机截图 + 抠图」的兜底
+- 证书只在本机 `.capture/certs/` 生成，绝不要提交或外发
+
+## 从抓包提取 CDN 参数（免反编译）
+
+`download-game-config.js` / `download-game-images.js` 原本要读小程序反编译源码里
+`src/settings.*.json` 的 `assets.server` 与 `assets.bundleVers`。这两个值在**静态资源请求 URL** 里就有，
+所以不反编译也能拿到：
+
+```text
+<server>/remote/<bundle>/config.<version>.json                 ← manifest，版本号来源
+<server>/remote/<bundle>/<nativeBase>/<xx>/<uuid>.<hash>.png   ← 贴图
+```
+
+### 抓包要求
+
+只需要抓到**静态资源请求**，不需要解协议、不需要登录态：
+
+1. 用 Reqable / Charles / mitmproxy 给手机装 CA 证书，开 HTTPS 解密
+2. 微信里清掉小游戏缓存，重新进入游戏（否则资源命中本地缓存，不发请求）
+3. 导出 HAR，或者把请求 URL 列表复制成文本
+
+### 提取
+
+```bash
+# HAR
+node tools/extract-cdn-from-capture.js --har capture.har
+
+# 纯文本 URL 列表
+node tools/extract-cdn-from-capture.js --text urls.txt
+
+# 直接给一条 URL
+node tools/extract-cdn-from-capture.js --url "https://xxx/remote/mainscene/config.abc123.json"
+```
+
+输出可直接复制的两条命令：
+
+```text
+[CDN]    https://xxx.example.com/res/
+[bundle] mainscene = abc123   (来自 config.<版本>.json)
+```
+
+### 后续
+
+```bash
+# 配置表（含 allconfig/<其他配置名>.json，活动临时作物通常在这里）
+node tools/download-game-config.js --cdn-server "<CDN>" --bundle-version <版本>
+
+# 贴图
+node tools/download-game-images.js --cdn-server "<CDN>" --bundle-version mainscene=<版本>
+```
+
+`--bundle-version` 支持 `mainscene=abc,native=def` 多个 bundle。
+不传 `--source` 时不会碰反编译目录。
+
+### 局限
+
+- 抓包里没有 `config.<版本>.json`（资源全命中缓存）→ 拿不到版本号，需清缓存重抓
+- 部分资源走独立 CDN 域名，脚本会列出候选域名但只采用 `/remote/` 前缀最可靠的那个
 
 ## 游戏配置下载
 

@@ -122,6 +122,92 @@
 
 ---
 
+## 活动作物展示补录（红薯 `1020307` / 种子 `20307`）
+
+「以薯换福」的作物由活动临时下发，官方静态表 `Plant.json`（323 种）与
+`ItemInfo.json`（1176 项）里都没有 `1020307` / `20307`，于是土地详情出现两处异常：
+
+- 名称退化成 `植物1020307` —— `getPlantName()` 的末位兜底
+- `getPlantById()` 未命中 → `seedId = 0` → `seedImage` 为空 → 卡片只剩占位小芽
+
+### 改动
+
+| 路径 | 性质 | 说明 |
+| --- | --- | --- |
+| `core/src/config/activity-crops.ts` | 新增 | 活动作物补录表（作物 ID ↔ 种子 ID ↔ 名称 ↔ 贴图） |
+| `core/src/config/gameConfig.ts` | 挂载点 | `getPlantName()` 缺配置时查补录表 |
+| `core/src/services/farm/land-analysis.ts` | 挂载点 | `buildLandDetail()` 补 `seedId` / `seedImage` 兜底 |
+| `core/src/gameConfig/seed_images_named/seed_images/20307.png` | 新增 | 红薯贴图（种子 ID） |
+| `core/src/gameConfig/seed_images_named/seed_images/1020307.png` | 新增 | 同一张图（作物 ID），沿用官方「一图两名」规则 |
+| `core/tests/activity-crop-display.test.js` | 新增 | 3 条：补录表映射、红薯详情、普通作物不受影响 |
+
+### 设计取舍
+
+- **不往 `Plant.json` / `ItemInfo.json` 里加条目**：`getPlantById()` 一旦命中，
+  `getAllSeeds()` 就会把活动种子当普通作物暴露给种植策略，可能被自动种植消耗。
+  补录表只参与展示，不参与选种。
+- 贴图是本地手绘替代。官方 `Crop_307` 贴图需要先拿到 bundle 版本号（见下一节「资源 URL 嗅探代理」），
+  抓到后用 `tools/download-game-images.js` 取官方 astc 并转 PNG，再删掉 `activity-crops.ts` 和这两张图。
+- `image_phase` 未改：缺 `grow_phases` 时沿用服务端粗状态，与现有兜底一致。
+
+---
+
+## 资源 URL 嗅探代理（2026-11-26）
+
+| 文件 | 状态 | 说明 |
+| --- | --- | --- |
+| `tools/sniff-asset-urls.js` | 新增 | 自带 MITM 代理，只记录客户端真实请求的资源 URL |
+| `docs/tools.md` | 文档 | 新增「用自带代理嗅探资源 URL」一节 |
+| `.gitignore` | 修改 | 忽略 `/.capture/`（根证书与 URL 日志） |
+
+### 动机
+
+红薯（`Crop_307`）没有官方贴图，只能手绘。想拿官方图就得先解决「URL 拼不出来」的问题：
+
+```text
+<server>/remote/plant/config.<版本hash>.json   → 版本号来自客户端 settings.json
+<server>/remote/plant/native/<xx>/<uuid>.<hash>.astc
+```
+
+### 实测排除项（别再重复查）
+
+| 尝试 | 结果 |
+| --- | --- |
+| `remote/plant/config.json` / `version.manifest` / `project.manifest` | 全 404 |
+| CDN 目录列举（`?list-type=2&prefix=`） | 只回 `LocationConstraint: ap-nanjing`，无 Key |
+| 已知旧版本 `mainscene@47eba` / `extraRes@c384c`（11-01） | 可下载，但早于红薯上线（11-17），无相关资源 |
+| 在 `extraRes@c384c` 9227 条路径里搜 red/potato/shu/307 | 只命中松树 `songshu_*` |
+| 本机 QQ 小游戏缓存（`cacheList.json` / `gamecaches` / `1112386029`） | 全用户目录均无 |
+| 上游 `plant_images/manifest.json`（231 项） | 无 `Crop_307`，且只是导出子集（Plant.json 有 318 作物） |
+| 枚举 5 位 hex 版本号 | 13ms/请求，全空间约 234 分钟，放弃 |
+
+结论：**没有一次真实客户端流量就拿不到版本号**，抓包不是可选项而是必要步骤。
+
+### 设计取舍
+
+- **不复用 `core/src/capture`**：那套依赖 `node-forge`、解析 protobuf、带会话管理和 REST API，
+  目标是登录 code / 好友 GID。这里只要 URL，独立脚本 300 行零新依赖更合适，也不碰 bot 主流程。
+- **证书用 openssl 命令行生成**：Node 无 X.509 签发 API，本机 Git 自带 openssl 3.5.7，
+  比引入 `node-forge` 少一个依赖。
+- **只记录 URL**：不落盘正文，避免把登录态写进日志。
+- 证书一次性生成多 SAN 通配（`*.qq.com` / `*.nqf.qq.com` / `*.qzone.qq.com`），
+  避免每域名动态签发。
+
+---
+
+## TS2742 现状（2026-11-26 复核）
+
+`core/src/capture/api-server.js` 已随基线回切删除，`@types/express@^5.0.6` + `express@4`
+的声明生成冲突不再存在。复核方式（declaration emit 全量，exit 0）：
+
+```bash
+cd core && npx tsc -p tsconfig.json --incremental false
+```
+
+新增的 `activity-crops.ts` 所有导出函数都写了显式返回类型，避免同类「推断类型无法命名」。
+
+---
+
 ## 统计
 
 ```bash

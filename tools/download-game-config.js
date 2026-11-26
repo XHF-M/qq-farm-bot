@@ -34,6 +34,11 @@ function printUsage() {
     console.log(`用法：
   node tools/download-game-config.js
   node tools/download-game-config.js --source <反编译源码目录> --output <输出目录>
+  node tools/download-game-config.js --cdn-server <CDN基址> --bundle-version <版本> --output <输出目录>
+
+抓包模式（不需要反编译源码）：
+  --cdn-server       CDN 根地址，例如 https://cdn.example.com/res/
+  --bundle-version   mainscene 的 bundle 版本号，取自抓包 URL 里的 config.<版本>.json
 
 默认参数：
   --source  ${DEFAULT_SOURCE}
@@ -45,17 +50,22 @@ function printUsage() {
 }
 
 function parseArgs(argv) {
-    const options = { source: DEFAULT_SOURCE, output: DEFAULT_OUTPUT };
+    const options = { source: DEFAULT_SOURCE, output: DEFAULT_OUTPUT, cdnServer: '', bundleVersion: '' };
     for (let i = 0; i < argv.length; i += 1) {
         const arg = argv[i];
         if (arg === '--help' || arg === '-h') {
             printUsage();
             process.exit(0);
         }
-        if (arg !== '--source' && arg !== '--output') throw new Error(`未知参数: ${arg}`);
+        if (!['--source', '--output', '--cdn-server', '--bundle-version'].includes(arg)) throw new Error(`未知参数: ${arg}`);
         const value = argv[++i];
-        if (!value || value.startsWith('--')) throw new Error(`${arg} 缺少路径参数`);
-        options[arg.slice(2)] = path.resolve(value);
+        if (!value || value.startsWith('--')) throw new Error(`${arg} 缺少参数`);
+        if (arg === '--cdn-server') options.cdnServer = value;
+        else if (arg === '--bundle-version') options.bundleVersion = value;
+        else options[arg.slice(2)] = path.resolve(value);
+    }
+    if (Boolean(options.cdnServer) !== Boolean(options.bundleVersion)) {
+        throw new Error('--cdn-server 与 --bundle-version 必须同时提供');
     }
     return options;
 }
@@ -88,6 +98,19 @@ function readSettings(sourceDir) {
     if (!serverUrl.pathname.endsWith('/')) serverUrl.pathname += '/';
     settings.server = serverUrl.href;
     return settings;
+}
+
+/**
+ * 直接从命令行构造 settings，跳过反编译源码目录。
+ * 这两个值在任意一条 CDN 资源请求 URL 里都能看到：
+ *   <server>/remote/mainscene/config.<version>.json
+ */
+function settingsFromCli(cdnServer, bundleVersion) {
+    if (!/^[A-Za-z0-9_-]+$/.test(bundleVersion)) throw new Error(`无效的 bundle 版本: ${bundleVersion}`);
+    const serverUrl = new URL(cdnServer);
+    if (serverUrl.protocol !== 'https:') throw new Error(`CDN 地址必须使用 HTTPS: ${cdnServer}`);
+    if (!serverUrl.pathname.endsWith('/')) serverUrl.pathname += '/';
+    return { filePath: '(命令行 --cdn-server)', server: serverUrl.href, bundleVersion };
 }
 
 function download(url, options = {}, redirectCount = 0, originalOrigin = null) {
@@ -373,7 +396,9 @@ async function mapWithConcurrency(items, concurrency, callback) {
 
 async function main() {
     const options = parseArgs(process.argv.slice(2));
-    const settings = readSettings(options.source);
+    const settings = options.cdnServer
+        ? settingsFromCli(options.cdnServer, options.bundleVersion)
+        : readSettings(options.source);
     const manifestUrl = new URL(`remote/${BUNDLE_NAME}/config.${settings.bundleVersion}.json`, settings.server).href;
     console.log(`[配置] settings: ${settings.filePath}`);
     console.log(`[配置] CDN: ${settings.server}`);

@@ -58,6 +58,9 @@ cleanup.bat
 protocol-captures/
 /docs/performance-analysis/
 
+# 资源嗅探代理生成的根证书与 URL 日志（仅本机使用，绝不入库）
+/.capture/
+
 /runtime/
 /releases/
 /packages/*/dist/
