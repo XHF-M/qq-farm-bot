@@ -61,6 +61,10 @@ protocol-captures/
 # 资源嗅探代理生成的根证书与 URL 日志（仅本机使用，绝不入库）
 /.capture/
 
+# Python 字节码缓存（部署脚本 py_compile 会生成）
+__pycache__/
+*.pyc
+
 /runtime/
 /releases/
 /packages/*/dist/

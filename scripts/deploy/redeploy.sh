@@ -4,6 +4,8 @@
 # 用法:
 #   bash redeploy.sh               # 拉上游最新 + 构建 + 重启 + 验证
 #   bash redeploy.sh --skip-build  # 不构建镜像，只重启容器 + 验证
+#   bash redeploy.sh --build-only  # 只构建镜像，不重启（预构建，之后可 --skip-build 秒上线）
+#   bash redeploy.sh --no-cache    # 不用构建缓存，全量重建（依赖变更/构建异常时用）
 #   bash redeploy.sh --verify-only # 只做健康验证
 #
 # 可选环境变量: APP_DIR / BRANCH / BACKUP_DIR / LOG
@@ -16,21 +18,32 @@ BRANCH="${BRANCH:-master}"
 LOG="${LOG:-/tmp/redeploy-current.log}"
 SKIP_BUILD=0
 VERIFY_ONLY=0
+NO_CACHE=0
+BUILD_ONLY=0
 TS="$(date +%Y%m%d-%H%M%S)"
 
 for arg in "$@"; do
   case "$arg" in
     --skip-build) SKIP_BUILD=1 ;;
     --verify-only) VERIFY_ONLY=1 ;;
+    --no-cache) NO_CACHE=1 ;;
+    --build-only) BUILD_ONLY=1 ;;
     -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
     *) echo "未知参数: $arg"; exit 2 ;;
   esac
 done
 
-RED=$'\033[31m'; GRN=$'\033[32m'; CYN=$'\033[36m'; BLD=$'\033[1m'; RST=$'\033[0m'
+# 互斥：只构建 / 只验证 / 跳过构建 不能混用
+if [ "$BUILD_ONLY" -eq 1 ] && { [ "$VERIFY_ONLY" -eq 1 ] || [ "$SKIP_BUILD" -eq 1 ]; }; then
+  echo "--build-only 不能与 --verify-only / --skip-build 同时使用" >&2
+  exit 2
+fi
+
+RED=$'\033[31m'; GRN=$'\033[32m'; YEL=$'\033[33m'; CYN=$'\033[36m'; BLD=$'\033[1m'; RST=$'\033[0m'
 step() { printf '\n%s==> %s%s\n' "$BLD$CYN" "$*" "$RST"; }
 ok()   { printf '%s  OK  %s%s\n' "$GRN" "$*" "$RST"; }
 err()  { printf '%s FAIL %s%s\n' "$RED" "$*" "$RST"; }
+warn() { printf '%s WARN %s%s\n' "$YEL" "$*" "$RST"; }
 die()  { err "$*"; echo "日志: $LOG"; echo "__REDEPLOY_DONE__ rc=1"; exit 1; }
 
 START_TS=$(date +%s)
@@ -84,10 +97,19 @@ if [ "$VERIFY_ONLY" -eq 0 ]; then
   grep -E '^(NPM_REGISTRY|NODE_IMAGE|PNPM_VERSION|PORT|TZ)=' .env | sed 's/^/    /'
 
   if [ "$SKIP_BUILD" -eq 0 ]; then
-    step "4/7 构建镜像（1.6G 机型首次约 20 分钟，有缓存约 5-8 分钟）"
+    if [ "$BUILD_ONLY" -eq 1 ]; then
+      step "4/7 构建镜像（--build-only：只建镜像，不重启）"
+    elif [ "$NO_CACHE" -eq 1 ]; then
+      step "4/7 构建镜像（--no-cache：全量重建，1.6G 机型约 20 分钟）"
+    else
+      step "4/7 构建镜像（1.6G 机型首次约 20 分钟，有缓存约 5-8 分钟）"
+    fi
     BUILD_LOG="/tmp/build-${TS}.log"
     BUILD_TS=$(date +%s)
-    docker compose build >"$BUILD_LOG" 2>&1 &
+    BUILD_FLAGS=""
+    [ "$NO_CACHE" -eq 1 ] && BUILD_FLAGS="--no-cache"
+    # shellcheck disable=SC2086  # 故意用词分割传 "--no-cache"
+    docker compose build $BUILD_FLAGS >"$BUILD_LOG" 2>&1 &
     BUILD_PID=$!
     # 边跑边汇报关键节点，避免长时间无输出让人以为卡死
     LAST_SEEN=""
@@ -111,6 +133,13 @@ if [ "$VERIFY_ONLY" -eq 0 ]; then
       die "镜像构建失败，完整日志 $BUILD_LOG"
     fi
     ok "镜像构建完成（日志 $BUILD_LOG）"
+    if [ "$BUILD_ONLY" -eq 1 ]; then
+      step "完成（--build-only）"
+      ok "镜像已就绪，容器没有重启，线上服务全程不受影响"
+      echo "    下次上线只需：--skip-build（跳过构建直接重启，秒级完成）"
+      echo "__REDEPLOY_DONE__ rc=0"
+      exit 0
+    fi
   else
     step "4/7 跳过构建（--skip-build）"
   fi
@@ -151,7 +180,32 @@ if [ "$HEALTH" = "healthy" ]; then ok "容器 healthy"; else err "容器状态 $
 docker stats --no-stream --format '    资源: {{.CPUPerc}} CPU / {{.MemUsage}}' qq-farm-bot 2>/dev/null
 
 step "7/7 nginx reload + 端到端验证"
-docker exec nginx-gateway nginx -t >/dev/null 2>&1 && docker exec nginx-gateway nginx -s reload >/dev/null 2>&1 && ok "nginx reloaded（清掉旧容器 IP 缓存）"
+# nginx 把 proxy_pass 里的域名解析结果缓存到 worker 里：容器重建后 IP 变了，
+# 不 reload 就会一直连旧 IP，对外表现为 502。
+# 注意两个坑：
+#   1) 只要同网关任一 upstream 容器没在跑，nginx -t 就会报 host not found in upstream，
+#      此时 reload 静默不生效（本脚本以前就是失败也不吭声，等于白写）；
+#   2) reload 失败时新 IP 永远不生效，必须重启 nginx 兜底。
+NGX_OK=0
+if docker exec nginx-gateway nginx -t >/dev/null 2>&1; then
+  if docker exec nginx-gateway nginx -s reload >/dev/null 2>&1; then
+    ok "nginx reloaded（清掉旧容器 IP 缓存）"
+    NGX_OK=1
+  else
+    warn "nginx reload 失败"
+  fi
+else
+  warn "nginx -t 校验不通过（多半有 upstream 容器未运行）"
+fi
+if [ "$NGX_OK" -eq 0 ]; then
+  warn "改为重启 nginx-gateway（同网关其他站点会短暂中断）"
+  if docker restart nginx-gateway >/dev/null 2>&1; then ok "nginx-gateway 已重启"; else err "nginx-gateway 重启失败"; fi
+  # 重启后等它把配置和 DNS 重新解析好，否则下面的端到端验证会误报
+  for _ in $(seq 1 10); do
+    docker exec nginx-gateway nginx -t >/dev/null 2>&1 && break
+    sleep 1
+  done
+fi
 sleep 2
 
 D="farm.yisuu.com.cn"

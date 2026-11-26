@@ -40,6 +40,31 @@ DONE_MARK = "__REDEPLOY_DONE__"
 IDLE_TIMEOUT = 40 * 60     # 40 分钟无新输出视为卡死（首次构建最慢约 22 分钟）
 BEAT_EVERY = 30            # 无新输出时每隔多少秒报一次心跳
 
+# 本机参数 -> 服务器脚本参数的透传白名单
+FORWARD_ARGS = ("--skip-build", "--verify-only", "--no-cache", "--build-only")
+
+HELP_TEXT = """
+qq-farm-bot 部署脚本
+
+构建方式：
+  （无参数）      全量部署：本机拉代码 → 服务器拉代码 → 构建镜像 → 重启 → 验证
+  --skip-build    快速上线：不构建，直接用现有镜像重启 + 验证（秒级）
+  --build-only    预构建：只在服务器建镜像，不重启；线上不受影响
+  --no-cache      无缓存重建：丢掉构建缓存全量重来（依赖变更或构建异常时用，最慢）
+  --verify-only   只做健康检查：不动代码、不动镜像、不重启
+
+其他参数：
+  --no-pull       本机不拉代码
+  --attach        不启动新任务，只接着看服务器上正在跑的那次部署
+  --help, -h      显示本说明
+
+使用建议：
+  日常改动             直接跑，有缓存约 5-8 分钟
+  只改配置、代码没变   --skip-build
+  想避开业务高峰       先 --build-only 建好镜像，闲时再 --skip-build 上线
+  依赖升级后构建报错   --no-cache
+""".strip()
+
 # ---------------------------------------------------------------- 终端颜色
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
@@ -184,11 +209,25 @@ def sh(client: paramiko.SSHClient, cmd: str) -> tuple[str, int]:
     return text, out.channel.recv_exit_status()
 
 
-def deploy_alive(client: paramiko.SSHClient) -> bool:
-    out, _ = run_channel(
-        client, f"test -f {REMOTE_PID} && kill -0 $(cat {REMOTE_PID}) 2>/dev/null "
-                f"&& echo alive || echo dead", settle=3)
-    return "alive" in out
+def deploy_alive(client: paramiko.SSHClient) -> bool | None:
+    """远端任务是否还活着。三态：True=在跑 / False=确认已死 / None=没测出来。
+
+    注意：构建期间服务器 CPU/IO 打满，建 SSH 通道 + fork + 执行要 5 秒左右
+    （实测 4.8s），settle 必须远大于这个值。否则 run_channel 会带着空串返回，
+    调用方把「没来得及输出」误判成「进程已死」，本机就在构建中途错误退出。
+    """
+    try:
+        out, finished = run_channel(
+            client, f"test -f {REMOTE_PID} && kill -0 $(cat {REMOTE_PID}) 2>/dev/null "
+                    f"&& echo alive || echo dead", settle=12)
+    except Exception:
+        return None
+    if "alive" in out:
+        return True
+    # 只有在命令确实跑完、且明确输出 dead 时才能断定进程没了
+    if "dead" in out and finished:
+        return False
+    return None
 
 
 def start_remote(client: paramiko.SSHClient, app_dir: str, branch: str,
@@ -198,8 +237,18 @@ def start_remote(client: paramiko.SSHClient, app_dir: str, branch: str,
     返回 False 表示未启动新任务（已有任务在跑，直接接管进度）。
     """
     say("启动服务器部署任务")
-    if deploy_alive(client):
-        warn("服务器上已有部署任务在跑，不重复启动（1.6G 机器并行构建会互相拖死）")
+    state = deploy_alive(client)
+    # None 表示通道没测出来，重试两次再下结论，避免误起第二个构建
+    for _ in range(2):
+        if state is not None:
+            break
+        time.sleep(2)
+        state = deploy_alive(client)
+    if state is not False:
+        if state is True:
+            warn("服务器上已有部署任务在跑，不重复启动（1.6G 机器并行构建会互相拖死）")
+        else:
+            warn("无法确认服务器上是否已有任务，保守起见不重复启动")
         ok("直接接管它的进度")
         return False
 
@@ -222,7 +271,7 @@ def start_remote(client: paramiko.SSHClient, app_dir: str, branch: str,
     # 确认真的跑起来了：pid 文件出现 / 日志有首行
     for _ in range(15):
         time.sleep(1)
-        if deploy_alive(client):
+        if deploy_alive(client) is True:
             ok("已启动，开始跟进日志")
             return True
         out, _ = run_channel(client, f"wc -c < {REMOTE_LOG} 2>/dev/null || echo 0", settle=2)
@@ -233,6 +282,18 @@ def start_remote(client: paramiko.SSHClient, app_dir: str, branch: str,
     return True
 
 
+def parse_done(text: str) -> int | None:
+    """从日志文本里捞出 __REDEPLOY_DONE__ rc=N。"""
+    for raw in text.splitlines():
+        line = ANSI_RE.sub("", raw.rstrip("\r")).strip()
+        if line.startswith(DONE_MARK):
+            try:
+                return int(line.split("rc=")[1].strip())
+            except (IndexError, ValueError):
+                return 1
+    return None
+
+
 def follow(client: paramiko.SSHClient) -> int:
     """SFTP 增量读日志（二进制 + 行缓冲），直到出现 DONE 标记。"""
     sftp = client.open_sftp()
@@ -241,6 +302,7 @@ def follow(client: paramiko.SSHClient) -> int:
     rc: int | None = None
     last_data = time.time()
     next_beat = time.time() + BEAT_EVERY
+    dead_strikes = 0
     try:
         while rc is None:
             try:
@@ -277,11 +339,28 @@ def follow(client: paramiko.SSHClient) -> int:
                     print(f"{C_YEL}  ... 仍在执行，已静默 {int(now - last_data)} 秒"
                           f"（日志 {size} 字节）{C_RST}", flush=True)
                     next_beat = now + BEAT_EVERY
-                    # 任务进程没了又没写 DONE，说明被 OOM / 信号杀掉
-                    if not deploy_alive(client):
-                        print(f"    进程已退出且没有结束标记，最后 15 行：")
-                        print(ansi_free_tail(client))
-                        return 1
+                    # 任务进程没了又没写 DONE，才是被 OOM / 信号杀掉。
+                    # 必须连续 3 次确认：构建高峰期 SSH 建通道可能超时，
+                    # 单次「没测出来」不能当成进程已死，否则会在构建中途误报失败。
+                    state = deploy_alive(client)
+                    if state is False:
+                        dead_strikes += 1
+                        if dead_strikes >= 3:
+                            # 进程刚退出的瞬间，DONE 标记可能落在最后一次增量读之后，
+                            # 判死前必须回捞一次日志尾部，否则会把「部署成功」误报成失败。
+                            final = parse_done(ansi_free_tail(client))
+                            if final is not None:
+                                print(f"{C_GRN}    进程已退出，但读到了结束标记 rc={final}{C_RST}")
+                                return final
+                            print(f"{C_RED}    进程已退出且没有结束标记"
+                                  f"（连续 {dead_strikes} 次确认），最后 15 行：{C_RST}")
+                            print(ansi_free_tail(client))
+                            return 1
+                        print(f"{C_YEL}  ... 存活检查未通过（{dead_strikes}/3），5 秒后复查{C_RST}",
+                              flush=True)
+                        next_beat = time.time() + 5
+                    else:
+                        dead_strikes = 0
             time.sleep(1.5)
     finally:
         sftp.close()
@@ -294,11 +373,22 @@ def ansi_free_tail(client: paramiko.SSHClient) -> str:
 
 
 def main() -> int:
+    args = set(sys.argv[1:])
+
+    if "--help" in args or "-h" in args:
+        print(HELP_TEXT)
+        return 0
+
     conf = load_conf()
     branch = conf.get("BRANCH", "master")
     app_dir = conf.get("APP_DIR", "/root/docker/qq-farm-bot")
-    args = set(sys.argv[1:])
+
     attach = "--attach" in args
+
+    conflicts = [c for c in (("--verify-only", "--build-only"), ("--skip-build", "--build-only"))
+                 if c[0] in args and c[1] in args]
+    if conflicts:
+        sys.exit(f"参数冲突：{conflicts[0][0]} 与 {conflicts[0][1]} 不能同时使用")
 
     if not LOCAL_SCRIPT.exists():
         sys.exit(f"缺少服务器脚本：{LOCAL_SCRIPT}")
@@ -328,7 +418,7 @@ def main() -> int:
             sftp.close()
             ok(f"{LOCAL_SCRIPT.name} -> {REMOTE_SCRIPT}")
 
-            extra = [a for a in ("--skip-build", "--verify-only") if a in args]
+            extra = [a for a in FORWARD_ARGS if a in args]
             start_remote(client, app_dir, branch, extra)
 
         rc = follow(client)
@@ -337,8 +427,14 @@ def main() -> int:
 
     print()
     if rc == 0:
-        print(f"{C_BLD}{C_GRN}部署成功{C_RST}")
-        print("提示：容器重启后账号需到面板手动点「启动」。")
+        if "--build-only" in args:
+            print(f"{C_BLD}{C_GRN}镜像构建完成{C_RST}（容器未重启，线上仍是旧版本）")
+            print("要上线请执行：redeploy.bat --skip-build")
+        elif "--verify-only" in args:
+            print(f"{C_BLD}{C_GRN}健康检查通过{C_RST}")
+        else:
+            print(f"{C_BLD}{C_GRN}部署成功{C_RST}")
+            print("提示：容器重启后账号需到面板手动点「启动」。")
     else:
         print(f"{C_BLD}{C_RED}部署未通过（rc={rc}），服务器日志 {REMOTE_LOG}{C_RST}")
     return rc
