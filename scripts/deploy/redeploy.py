@@ -111,8 +111,8 @@ def git(args: list[str]) -> subprocess.CompletedProcess:
                           encoding="utf-8", errors="replace", check=False)
 
 
-def local_pull(branch: str) -> None:
-    say("本机同步远程仓库")
+def local_pull(branch: str, remote: str = "fork") -> None:
+    say(f"本机同步远程仓库（{remote}/{branch}）")
     dirty = git(["status", "--porcelain"]).stdout.strip()
     stashed = False
     if dirty:
@@ -123,10 +123,10 @@ def local_pull(branch: str) -> None:
             sys.exit("git stash 失败，手动处理后重试")
         stashed = True
 
-    if git(["fetch", "origin"]).returncode != 0:
-        sys.exit("git fetch 失败（检查网络 / GitHub 凭据）")
+    if git(["fetch", remote]).returncode != 0:
+        sys.exit(f"git fetch {remote} 失败（检查网络 / GitHub 凭据 / remote 名称）")
     before = git(["rev-parse", "--short", "HEAD"]).stdout.strip()
-    r = git(["merge", f"origin/{branch}", "--no-edit"])
+    r = git(["merge", f"{remote}/{branch}", "--no-edit"])
     if r.returncode != 0:
         print(r.stdout, r.stderr)
         sys.exit("合并失败（可能有冲突），手动解决后重试")
@@ -304,7 +304,7 @@ def main() -> int:
         sys.exit(f"缺少服务器脚本：{LOCAL_SCRIPT}")
 
     if not attach and "--no-pull" not in args:
-        local_pull(branch)
+        local_pull(branch, conf.get("GIT_REMOTE", "fork"))
     elif attach:
         say("只跟进现有任务（--attach）")
 

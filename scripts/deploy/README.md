@@ -22,11 +22,26 @@ Windows 上也可以直接双击仓库根目录的 `redeploy.bat`。
 
 | 参数 | 作用 |
 |---|---|
-| （无） | 全流程：本机 `git pull` → 服务器拉码 → 构建 → 重启 → 验证 |
+| （无） | 全流程：本机同步 `GIT_REMOTE/BRANCH` → 服务器拉码 → 构建 → 重启 → 验证 |
 | `--no-pull` | 本机不拉代码，只部署服务器 |
 | `--skip-build` | 服务器不重建镜像，只重启容器 + 验证（改配置时用，约 20 秒） |
 | `--verify-only` | 只做健康检查和端到端验证（约 20 秒） |
 | `--attach` | 不启动新任务，只接着看上次的部署进度 |
+
+## 仓库指向（两端都跟 fork，不跟上游）
+
+| 位置 | remote | 指向 |
+|---|---|---|
+| 本机 | `fork`（可用 `GIT_REMOTE` 改名） | `XHF-M/qq-farm-bot` |
+| 服务器 `APP_DIR` | `origin` | `XHF-M/qq-farm-bot` |
+
+上游 `liyangpengs/qq-farm-bot` 已于 2026-11-25 停更，但本机 `origin` 仍指向它。
+所以本机同步**必须**走 `GIT_REMOTE`（默认 `fork`），否则会把上游提交顺手合并进来。
+
+```bash
+git push fork master   # 本机只推 fork
+redeploy.bat           # 本机合并 fork/master -> 服务器 reset 到同一提交
+```
 
 ## 它做了什么
 
