@@ -21,6 +21,7 @@ import QingMeiActivityPage from './activity-center/QingMeiActivityPage.vue'
 import QixiActivityPage from './activity-center/QixiActivityPage.vue'
 import StellarActivityPage from './activity-center/StellarActivityPage.vue'
 import WeatherActivityPage from './activity-center/WeatherActivityPage.vue'
+import YishuHuanfuActivityPage from './activity-center/YishuHuanfuActivityPage.vue'
 
 const props = withDefaults(defineProps<{ space?: 'farm' | 'ranch' }>(), { space: 'farm' })
 const router = useRouter()
@@ -52,7 +53,7 @@ async function openActivity(activity: ActivityDirectoryItemDto) {
 
   selectedActivity.value = gameplay.module.key
   selectedInstanceId.value = activity.instanceId || activity.activityIds.find(id => ['2026092501', '2026110104'].includes(id)) || ''
-  if (['pet', 'wish', 'happy', 'milk', 'muge'].includes(gameplay.module.key))
+  if (['pet', 'wish', 'happy', 'milk', 'muge', 'yishuhuanfu'].includes(gameplay.module.key))
     return
   const detailsLoaded = await activityStore.loadDetails(accountId(), gameplay.module.key)
   if (gameplay.module.key === 'qixi' && currentAccountId.value) {
@@ -155,6 +156,7 @@ onUnmounted(() => {
     @back="goBack"
   />
   <PetDiaryPage v-else-if="selectedActivity === 'pet'" @back="goBack" />
+  <YishuHuanfuActivityPage v-else-if="selectedActivity === 'yishuhuanfu'" @back="goBack" />
 </template>
 
 <style>

@@ -48,6 +48,15 @@ const settings = defineModel<AutomationSettingsFormModel>({ required: true })
 const ripeningOnly = computed(() => ['normal_ripen', 'organic_ripen'].includes(settings.value.automation.fertilizer ?? 'none'))
 const ripeningEnabled = computed(() => ripeningOnly.value || settings.value.automation.fertilizer === 'smart')
 const ripeningFertilizerLabel = computed(() => settings.value.automation.fertilizer === 'normal_ripen' ? '普通化肥' : '有机化肥')
+// 以薯换福卖薯开始时间：30 分钟一档，空串=不限。到点后每轮自动任务（10 分钟）都卖，不是精准卡点。
+const yishuSellTimeOptions = computed(() => {
+  const options = [{ label: '不限时段（随时可卖）', value: '' }]
+  for (let minutes = 0; minutes < 24 * 60; minutes += 30) {
+    const label = `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`
+    options.push({ label, value: label })
+  }
+  return options
+})
 const ranchSwitches = [
   ['ranch_harvest', '自动收获'],
   ['ranch_produce', '自动生产'],
@@ -467,6 +476,63 @@ const ranchFeedStages = [
           </div>
           <p v-else class="mt-3 text-xs text-gray-500 dark:text-gray-400">
             到货提醒可单独开启；购买提醒需先打开自动购买。
+          </p>
+        </section>
+
+        <section class="farm-card rounded-2xl p-4">
+          <div class="mb-4 flex items-start gap-3">
+            <div class="h-9 w-9 flex shrink-0 items-center justify-center rounded-lg bg-orange-50 text-orange-600 dark:bg-orange-900/25 dark:text-orange-400">
+              <span class="i-carbon-sprout text-xl" />
+            </div>
+            <div>
+              <h4 class="text-base text-gray-900 font-bold dark:text-gray-100">
+                以薯换福
+              </h4>
+              <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                每日领种子与分享、按好友收购价自动卖薯、领取小铺提成
+              </p>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <div class="automation-setting-item">
+              <BaseSwitch v-model="settings.automation.yishu_claim_seed" class="automation-setting-item" label="自动领取红薯种子" />
+            </div>
+            <div class="automation-setting-item">
+              <BaseSwitch v-model="settings.automation.yishu_share" class="automation-setting-item" label="自动分享铺子" />
+            </div>
+            <div class="automation-setting-item">
+              <BaseSwitch v-model="settings.automation.yishu_auto_sell" class="automation-setting-item" label="自动比价卖薯" />
+            </div>
+            <div class="automation-setting-item">
+              <BaseSwitch v-model="settings.automation.yishu_claim_commission" class="automation-setting-item" label="自动领取收购提成" />
+            </div>
+            <div class="automation-setting-item sm:col-span-2">
+              <BaseSwitch
+                v-model="settings.automation.yishu_sell_fallback_own"
+                class="automation-setting-item"
+                label="好友收满时卖给自己"
+                :disabled="!settings.automation.yishu_auto_sell"
+              />
+            </div>
+          </div>
+
+          <div v-if="settings.automation.yishu_auto_sell" class="mt-3 rounded-lg bg-gray-50 p-3 space-y-3 dark:bg-gray-800/60">
+            <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              <BaseInput v-model.number="settings.automation.yishu_scan_friend_limit" type="number" min="1" max="200" label="比价好友上限（1–200）" />
+              <BaseInput v-model.number="settings.automation.yishu_scan_interval_minutes" type="number" min="5" max="720" label="比价间隔分钟（5–720）" />
+              <BaseInput v-model.number="settings.automation.yishu_sell_min_count" type="number" min="1" max="10000" label="起卖数量（1–10000）" />
+              <BaseSelect v-model="settings.automation.yishu_sell_after_time" label="开始售卖时间" :options="yishuSellTimeOptions" />
+            </div>
+            <p class="text-xs text-gray-500 dark:text-gray-400">
+              「开始售卖时间」不是精准卡点：选 23:00 表示过了 23:00 后每轮自动任务（10 分钟）都按原逻辑卖，晚一点好友多已分享、暴击加成更高；留空为不限。
+            </p>
+            <p class="text-xs text-amber-600 dark:text-amber-400">
+              自动卖薯会占用好友铺子的当日额度；比价只读、不成交，价格以出售回包为准。
+            </p>
+          </div>
+          <p v-else class="mt-3 text-xs text-gray-500 dark:text-gray-400">
+            领种子与分享可在活动页手动操作；自动卖薯需先打开上面的开关。
           </p>
         </section>
       </div>

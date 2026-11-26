@@ -269,6 +269,8 @@ function activityDisplayName(activity: ActivityDirectoryItemDto) {
 function activityIconSrc(activity: ActivityDirectoryItemDto) {
   if (activity.gameplayKey === 'muge')
     return '/activity-assets/muge/icon.png'
+  if (activity.gameplayKey === 'yishuhuanfu')
+    return '/activity-assets/yishuhuanfu/icon.svg'
   if (activity.activityIds.some(id => ['2026111800', '2026111801'].includes(id)))
     return '/activity-assets/friend-recall/icon.png'
   if (activity.gameplayKey === 'pet')

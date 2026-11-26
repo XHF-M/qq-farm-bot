@@ -78,6 +78,17 @@ const DEFAULT_ACCOUNT_CONFIG: AccountConfig = {
         fertilizer_smart_seconds: 300,
         skip_own_weed_bug: true,
         show_manual_fertilizer: true,
+        // 以薯换福按本项目保守默认：会改状态的自动动作全部关闭，由用户主动开启。
+        yishu_claim_seed: false,
+        yishu_share: false,
+        yishu_auto_sell: false,
+        yishu_claim_commission: false,
+        yishu_sell_fallback_own: false,
+        yishu_scan_friend_limit: 20,
+        yishu_scan_interval_minutes: 30,
+        yishu_sell_min_count: 1,
+        // 空串 = 不限时段；填 "HH:MM" 就等过了这个点才卖。
+        yishu_sell_after_time: '',
     },
     plantingStrategy: 'max_exp',
     preferredSeedId: 0,

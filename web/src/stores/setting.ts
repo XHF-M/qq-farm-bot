@@ -68,6 +68,17 @@ export interface AutomationConfig {
   mystery_shop_purchase_notify?: boolean
   skip_own_weed_bug?: boolean
   show_manual_fertilizer?: boolean
+  // 以薯换福：领种子 / 分享 / 自动按好友收购价卖薯，数值项控制比价频率与分摊风险。
+  yishu_claim_seed?: boolean
+  yishu_share?: boolean
+  yishu_auto_sell?: boolean
+  yishu_claim_commission?: boolean
+  yishu_sell_fallback_own?: boolean
+  yishu_scan_friend_limit?: number
+  yishu_scan_interval_minutes?: number
+  yishu_sell_min_count?: number
+  /** 以薯换福：到点后才开始卖薯（"HH:MM"，空串=不限）。 */
+  yishu_sell_after_time?: string
 }
 
 export interface IntervalsConfig {
