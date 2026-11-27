@@ -1,5 +1,8 @@
+import { createAutoRelogin, resolveAutoReloginOptions } from './auto-relogin';
+
 export {};
 const { createScheduler } = require('../services/scheduler');
+const { getAccounts } = require('../models/store');
 
 const { BackendChildTracker } = require('@qq-farm-bot/session-contract');
 const { accountSessionKey, findAccountSession, listHostedSessions, stopHostedAccount } = require('../session/ipc');
@@ -65,10 +68,31 @@ function createWorkerManager(options: WorkerManagerOptions) {
     } = options;
     const managerScheduler = createScheduler('worker_manager');
     const useThreadRuntime = runtimeMode === 'thread' && !(processRef as any).pkg && typeof WorkerThread === 'function';
+    let shuttingDown = false;
+
+    // 掉线后用保存的 loginBuffer 自动换新 code 重连；同账号别处登录时让位，不抢会话。
+    const autoRelogin = createAutoRelogin({
+        scheduler: managerScheduler,
+        log,
+        addAccountLog,
+        getAccount: (accountId: string) => {
+            try {
+                return (getAccounts().accounts || []).find((item: any) => item.id === accountId) || null;
+            } catch {
+                return null;
+            }
+        },
+        applyNewCode: (accountId: string, code: string) => {
+            const data = addOrUpdateAccount({ id: accountId, code });
+            return ((data && data.accounts) || []).find((item: any) => item.id === accountId) || null;
+        },
+        startAccount: async (account: any) => { await startAccountWorker(account); },
+        isRunning: (accountId: string) => !!workers[accountId],
+        isActive: () => !shuttingDown,
+    }, resolveAutoReloginOptions(processRef.env));
 
     const managed = Boolean(processRef.env.FARM_SESSION_SOCKET);
     const tracker = managed && !useThreadRuntime ? new BackendChildTracker(path.join(getRuntimePaths().runtimeDir, 'backend-children.json')) : null;
-    let shuttingDown = false;
 
     function createThreadWorker(account: any): any {
         const workerOptions: any = {
@@ -237,6 +261,8 @@ function createWorkerManager(options: WorkerManagerOptions) {
     }
 
     async function stopAccountWorker(account: any) {
+        // 人工停止就不再自动拉起，否则会被定时重登反复唤醒
+        autoRelogin.reset(String(account?.id || ''));
         if (!managed) { stopWorker(account.id); return; }
         const worker = workers[account.id];
         const key = worker?.accountKey || accountSessionKey(account);
@@ -346,6 +372,7 @@ function createWorkerManager(options: WorkerManagerOptions) {
                 worker.disconnectedSince = 0;
                 worker.autoDeleteTriggered = false;
                 worker.wsError = null;
+                autoRelogin.markOnline(accountId);
             } else if (!worker.stopping) {
                 const now = Date.now();
                 if (!worker.disconnectedSince) worker.disconnectedSince = now;
@@ -369,6 +396,7 @@ function createWorkerManager(options: WorkerManagerOptions) {
                         { reason: 'offline_timeout', offlineMs },
                     );
                     stopWorker(accountId);
+                    autoRelogin.reset(accountId);
                     try {
                         deleteAccount(accountId);
                     } catch (e: any) {
@@ -427,6 +455,8 @@ function createWorkerManager(options: WorkerManagerOptions) {
             });
             addAccountLog('kickout_stop', `账号 ${worker.name} 被踢下线，已自动停止`, accountId, worker.name, { reason, reasonCode, diagnostics });
             stopWorker(accountId);
+            // 被人工登录顶下线时给较长冷却，避免和手机端互踢；code 过期类错误快速重试。
+            autoRelogin.notifyDisconnected(accountId, { reasonCode, reason });
         } else if (msg.type === 'account_disconnected') {
             if (worker.terminalHandled) return;
             worker.terminalHandled = true;
@@ -465,6 +495,7 @@ function createWorkerManager(options: WorkerManagerOptions) {
                 { source, disconnectCode: code, reason, phase, connectionId: Number(msg.connectionId) || 0, diagnostics: msg.diagnostics || null },
             );
             stopWorker(accountId);
+            autoRelogin.notifyDisconnected(accountId, { code, reason });
         } else if (msg.type === 'api_response') {
             const { id, result, error } = msg;
             managerScheduler.clear(`api_timeout_${accountId}_${id}`);

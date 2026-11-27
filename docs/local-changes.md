@@ -463,6 +463,75 @@ g.getItemById(40307).name;          // '红薯'（来自 ItemInfo）
 
 ---
 
+## 掉线自动重登（微信 loginBuffer 复用，2026-11-27）
+
+### 根因：不是 code 过期，是被别的终端顶下线
+
+线上账号近两天 4 次掉线全部是 `gatepb.KickoutNotify` / `reasonCode=1`「已在其他终端登录」，
+code 报 400 只有 1 次。也就是说：使用者在手机上打开农场 → 服务端把 bot 踢掉 →
+旧 code 已消费不能重连 → 账号停机等人扫码。
+
+凌晨 01:24 / 01:43 / 01:55 连续三次「登录成功」用的是同一个旧 code，说明
+**code 未过期时可以复用多次**，只有真过期才 400。
+
+### 做法
+
+扫码换 code 时把 `loginBuffer`（能反复换新 code 的长期凭据）保存下来，掉线后自动换一个新 code 重启：
+
+```text
+扫码 → pcyyb 登录缓冲 → getNativeWxLoginCode() 换 wx.login code
+                              ↑ 之前用完就 destroy，现在加密落盘
+掉线 → 读 loginBuffer → 再换一个 code → 更新账号 → 重启 worker
+```
+
+落盘在 `data/wx-login-buffers/`：`pending.json` 按 code 哈希暂存（扫码到建账号之间的窗口，30 分钟 TTL），
+建账号写入同一 code 时认领到 `<accountId>.json`。buffer / openid / nickname 一起 AES-256-GCM 加密，
+密钥是 `data/.wx-login-buffer.key`（0600，随 data 卷走）。
+
+### 关键取舍：和手机让位，不互踢
+
+使用者会自己上线，所以不能一掉线就抢：
+
+| 掉线原因 | 首轮等待 | 之后 |
+|---|---|---|
+| `reasonCode=1` 其他终端登录 | 20 分钟 | 40 / 80 / 封顶 120 分钟 |
+| 400 / 网关错误 | 90 秒 | 同上，按轮次翻倍 |
+| `ManualAuth rejected`（票据废了） | 不重试 | 清掉 buffer，提示重新扫码 |
+
+连续 8 次失败放弃，30 分钟冷静期后才允许再试；连接稳定在线满 10 分钟把退避清零。
+人工在面板点停止时立即取消定时任务，不会被反复拉起。
+
+### 开关
+
+```bash
+FARM_AUTO_RELOGIN=0              # 关闭自动重登（默认开）
+FARM_AUTO_RELOGIN_DELAY_MIN=20   # 被顶下线后的首轮等待分钟数
+```
+
+### 复核
+
+```bash
+node --test core/tests/wx-login-keepalive.test.js   # 13 项
+```
+
+```text
+ok  loginBuffer 按账号加密落盘，能原样取回
+ok  同一 code 只能被认领一次，手工粘贴的 code 无缓冲
+ok  被踢下线：先等 20 分钟再自动换 code 重连
+ok  code 过期（400）：不等 20 分钟，90 秒后快速重试
+ok  换 code 失败按指数退避，连续失败后放弃
+ok  登录凭据本身失效：立刻放弃并清掉缓冲
+ok  账号写入扫码得到的 code 时自动认领 loginBuffer
+```
+
+### 已知边界
+
+- **loginBuffer 真实 TTL 未实测**。凭据失效时会走 `ManualAuth rejected` 分支自动清掉并要求扫码，
+  不会无限重试；想确认寿命，可以在扫码后记录时间，隔几小时/几天观察日志。
+- 主进程重启（部署/容器重启）会丢掉已排的重登任务，账号仍需手动点启动 —— 这是原有行为，本次未改。
+
+---
+
 ## 统计
 
 ```bash

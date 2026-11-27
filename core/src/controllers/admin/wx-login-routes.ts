@@ -1,14 +1,15 @@
 import crypto from 'node:crypto';
 import type { Application, Request, Response } from 'express';
 import type { AdminContext } from './context';
-import { WxLoginService } from '../../services/wx-login/service';
+import { WX_FARM_APP_ID, WxLoginService } from '../../services/wx-login/service';
 import type { ScanStatus, WxLoginSession } from '../../services/wx-login/service';
+import { rememberPendingBuffer } from '../../services/wx-login/buffer-store';
 
 export { };
 
 const { createAuthRequired } = require('./middleware');
 
-const TARGET_APP_ID = 'wx5306c5978fdb76e4';
+const TARGET_APP_ID = WX_FARM_APP_ID;
 const TASK_TTL_MS = 110_000;
 type Status = ScanStatus | 'ready_for_code' | 'failed';
 interface Task { id: string; createdAt: number; status: Status; session: WxLoginSession; qr: Buffer; code?: string; pending?: Promise<void>; }
@@ -34,7 +35,21 @@ async function confirm(task: Task): Promise<void> {
     await wxLogin.confirm(task.session);
     task.status = 'ready_for_code';
 }
-async function consumeCode(task: Task): Promise<void> { if (task.status !== 'ready_for_code') throw new Error('Login code is not ready'); task.code = await wxLogin.issueCode(task.session, TARGET_APP_ID); }
+async function consumeCode(task: Task): Promise<void> {
+    if (task.status !== 'ready_for_code') throw new Error('Login code is not ready');
+    task.code = await wxLogin.issueCode(task.session, TARGET_APP_ID);
+    // loginBuffer 能反复换新 code：先暂存，等前端建账号/改 code 时绑到 accountId，
+    // 掉线后就能自动重登，不必再扫码。失败不影响本次登录。
+    try {
+        rememberPendingBuffer(task.code, {
+            buffer: task.session.loginBuffer || '',
+            openid: task.session.openid,
+            nickname: task.session.nickname,
+        });
+    } catch {
+        // 落盘失败时退化为「只能手动重登」，不阻断扫码登录
+    }
+}
 
 function mountWxLoginRoutes(app: Application, ctx: AdminContext): void {
     app.use('/api/wx-login', createAuthRequired(ctx));

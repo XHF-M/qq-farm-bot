@@ -103,9 +103,26 @@ function addOrUpdateAccount(acc: Partial<Account> & { avatarUrl?: string }): Acc
     }
     if (touchedAccountId) {
         ensureAccountConfig(touchedAccountId);
+        bindWxLoginBuffer(touchedAccountId, data);
     }
     saveAccounts(data);
     return data;
+}
+
+/**
+ * 扫码时 loginBuffer 按 code 暂存在 wx-login/buffer-store，账号写入同一个 code 就认领过来。
+ * 之后掉线可以用它自动换新 code 重登；手工粘贴的 code 没有暂存记录，只能手动重登。
+ */
+function bindWxLoginBuffer(accountId: string, data: AccountsData): void {
+    const target = data.accounts.find(a => a.id === accountId);
+    if (!target || !target.code) return;
+    if (String(target.platform || '').toLowerCase() !== 'wx') return;
+    try {
+        const { bindPendingBufferToAccount } = require('../../services/wx-login/buffer-store');
+        bindPendingBufferToAccount(String(target.code), accountId);
+    } catch {
+        // 绑定失败只影响自动重登能力，不影响账号保存
+    }
 }
 
 function deleteAccount(id: unknown): AccountsData {
@@ -117,6 +134,12 @@ function deleteAccount(id: unknown): AccountsData {
     }
     saveAccounts(data);
     removeAccountConfig(id);
+    try {
+        const { dropAccountBuffer } = require('../../services/wx-login/buffer-store');
+        dropAccountBuffer(String(id));
+    } catch {
+        // 清理登录缓冲失败不影响删除账号
+    }
     return data;
 }
 

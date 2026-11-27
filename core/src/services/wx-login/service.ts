@@ -11,6 +11,9 @@ const OAUTH_APP_ID = 'wxd44977328b36e647';
 const USER_AGENT = 'Mozilla/5.0';
 const LOGIN_BUFFER_ACCESS_KEY = 'wgrdg373hy26ww2';
 
+/** 农场小程序的 AppID：扫码、换取 code 与自动重登必须一致 */
+export const WX_FARM_APP_ID = 'wx5306c5978fdb76e4';
+
 export type ScanStatus = 'waiting' | 'scanned' | 'authorized' | 'cancelled' | 'expired';
 
 export interface WxLoginSession {
