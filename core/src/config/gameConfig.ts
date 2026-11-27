@@ -258,6 +258,95 @@ function registerActivityPlants(): void {
     }
 }
 
+/**
+ * 活动 / 节令作物（EventPlants.json）。
+ *
+ * 官方把活动作物从 Plant.json 里拆出来单独下发，字段也换了名：
+ * `fruit_id` / `fruit_count` 平铺、没有 land_level_need、多了 asset_name。
+ * 这里转成 PlantItem 形状单独存一份，只在 Plant.json 查不到时兜底。
+ *
+ * 同样不并进 seedToPlant —— 合并会让 getAllSeeds() 把限时活动的种子
+ * 当成常驻商店商品暴露给种植策略。
+ */
+const eventPlantMap = new Map<number, PlantItem>();
+const eventSeedToPlant = new Map<number, PlantItem>();
+const eventFruitToPlant = new Map<number, PlantItem>();
+/** asset_name（如 Crop_307）→ plantId，给贴图定位用 */
+const eventAssetNameMap = new Map<string, number>();
+
+interface EventPlantRaw {
+    id: number;
+    seed_id: number;
+    fruit_id: number;
+    asset_name?: string;
+    name: string;
+    size?: number;
+    seasons?: number;
+    grow_phases?: string;
+    exp?: number;
+    fruit_count?: number;
+    mutant_effect_plant?: string | null;
+    all_state_spine?: string | null;
+}
+
+function toPlantItem(raw: EventPlantRaw): PlantItem {
+    return {
+        id: Number(raw.id) || 0,
+        name: raw.name || '',
+        mutant_effect_plant: raw.mutant_effect_plant || null,
+        fruit: { id: Number(raw.fruit_id) || 0, count: Number(raw.fruit_count) || 1 },
+        seed_id: Number(raw.seed_id) || null,
+        land_level_need: 0,
+        seasons: Number(raw.seasons) || 1,
+        grow_phases: raw.grow_phases || '',
+        exp: Number(raw.exp) || 0,
+        special_fruit: null,
+        size: Number(raw.size) || 1,
+        offsetPosition: { x: 0, y: 0 },
+        mutantEffectScale: { x: 1, y: 1 },
+        harvestOffsetPosition: { x: 0, y: 0 },
+        harvestRandom: null,
+        harvestAllSpineRes: null,
+        harvestAllOffsetPosition: null,
+        harvestAniName: '',
+        all_state_spine: raw.all_state_spine || null,
+        mature_effect: '',
+        mature_effect_offset: { x: 0, y: 0 },
+        rare_plant_light_pos: null,
+        exp_root: 0,
+        exp_alter: 0,
+        fruit_root: 0,
+        fruit_alter: 0,
+    };
+}
+
+function loadEventPlants(filePath: string): void {
+    if (!fs.existsSync(filePath)) return;
+    const list: EventPlantRaw[] = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    eventPlantMap.clear();
+    eventSeedToPlant.clear();
+    eventFruitToPlant.clear();
+    eventAssetNameMap.clear();
+    for (const raw of list || []) {
+        const id = Number(raw && raw.id) || 0;
+        if (id <= 0) continue;
+        const plant = toPlantItem(raw);
+        // Plant.json 里已有的以官方主表为准，事件表只补缺口。
+        if (plantMap.has(id)) continue;
+        eventPlantMap.set(id, plant);
+        if (plant.seed_id) eventSeedToPlant.set(plant.seed_id, plant);
+        if (plant.fruit.id) eventFruitToPlant.set(plant.fruit.id, plant);
+        if (raw.asset_name) eventAssetNameMap.set(String(raw.asset_name), id);
+    }
+    console.warn(`[配置] 已加载活动作物配置 (${eventPlantMap.size} 种)`);
+}
+
+/** 统一的作物查找：官方主表 → 活动作物表 */
+function findPlant(plantId: number): PlantItem | undefined {
+    const id = Number(plantId) || 0;
+    return plantMap.get(id) || eventPlantMap.get(id);
+}
+
 // 官方活动说明确认：变异 13 为鹊羽活动效果，收获时会额外获得鹊羽。
 // 运行时 MutantEffect 暂未下发 tips/description，因此在展示 DTO 层补充说明。
 const MUTANT_EFFECT_DESCRIPTION_FALLBACKS = new Map<number, string>([
@@ -337,6 +426,13 @@ function loadConfigs(): void {
         }
     } catch (e: any) {
         console.warn('[配置] 加载 ItemInfo.json 失败:', e.message);
+    }
+
+    // 加载活动作物配置（官方把活动/节令作物从 Plant.json 拆出来单独下发）
+    try {
+        loadEventPlants(path.join(configDir, 'EventPlants.json'));
+    } catch (e: any) {
+        console.warn('[配置] 加载 EventPlants.json 失败:', e.message);
     }
 
     // 加载土地网格配置（多格作物布局）
@@ -456,26 +552,27 @@ function getLevelExpProgress(level: number, totalExp: number): { current: number
 // ============ 植物配置相关 ============
 
 function getPlantById(plantId: number): PlantItem | undefined {
-    return plantMap.get(plantId);
+    return findPlant(plantId);
 }
 
 function getPlantBySeedId(seedId: number): PlantItem | undefined {
     const id = Number(seedId) || 0;
-    // 活动作物不走 Plant.json，用合成条目兜底，让背包种子识别（getBagSeeds）能看到它。
-    return seedToPlant.get(id) || activityPlantMap.get(id);
+    // 活动作物不在 Plant.json 里，依次用官方事件表、本地补录表兜底，
+    // 让背包种子识别（getBagSeeds）能看到它。
+    return seedToPlant.get(id) || eventSeedToPlant.get(id) || activityPlantMap.get(id);
 }
 
 function getPlantName(plantId: number): string {
-    const plant = plantMap.get(plantId);
+    const plant = findPlant(plantId);
     if (plant) return plant.name;
-    // 活动临时作物不在 Plant.json 里，用补录表兜底，避免界面出现「植物1020307」
+    // 活动临时作物既不在 Plant.json 也不在 EventPlants.json 时，用补录表兜底
     const activityName = getActivityCropName(plantId);
     if (activityName) return activityName;
     return `植物${plantId}`;
 }
 
 function getPlantNameBySeedId(seedId: number): string {
-    const plant = seedToPlant.get(seedId);
+    const plant = seedToPlant.get(seedId) || eventSeedToPlant.get(seedId);
     if (plant) return plant.name;
     // 活动作物种子不在 Plant.json 里，用补录表兜底，避免出现「种子20307」
     const activityName = getActivityCropBySeedId(seedId)?.name;
@@ -484,7 +581,7 @@ function getPlantNameBySeedId(seedId: number): string {
 }
 
 function getPlantGrowTime(plantId: number): number {
-    const plant = plantMap.get(plantId);
+    const plant = findPlant(plantId);
     if (!plant || !plant.grow_phases) return 0;
 
     const phases = plant.grow_phases.split(';').filter(p => p);
@@ -509,7 +606,7 @@ interface PlantGrowPhase {
  * 服务端响应的 phases 是从当前阶段开始的配置后缀。
  */
 function getPlantGrowPhases(plantId: number): PlantGrowPhase[] {
-    const plant = plantMap.get(Number(plantId) || 0);
+    const plant = findPlant(Number(plantId) || 0);
     if (!plant || !plant.grow_phases) return [];
 
     return String(plant.grow_phases)
@@ -532,12 +629,12 @@ function formatGrowTime(seconds: number): string {
 }
 
 function getPlantExp(plantId: number): number {
-    const plant = plantMap.get(plantId);
+    const plant = findPlant(plantId);
     return plant ? (plant.exp || 0) : 0;
 }
 
 function getFruitName(fruitId: number): string {
-    const plant = fruitToPlant.get(fruitId);
+    const plant = fruitToPlant.get(fruitId) || eventFruitToPlant.get(fruitId);
     if (plant) return plant.name;
     // 活动作物果实不在 Plant.json 里，用补录表兜底，避免出现「果实40307」
     const activityName = getActivityItemById(fruitId)?.name;
@@ -546,7 +643,7 @@ function getFruitName(fruitId: number): string {
 }
 
 function getPlantByFruitId(fruitId: number): PlantItem | undefined {
-    return fruitToPlant.get(fruitId);
+    return fruitToPlant.get(fruitId) || eventFruitToPlant.get(fruitId);
 }
 
 function getAllSeeds(): SeedInfo[] {

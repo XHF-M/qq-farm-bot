@@ -146,8 +146,8 @@
 - **不往 `Plant.json` / `ItemInfo.json` 里加条目**：`getPlantById()` 一旦命中，
   `getAllSeeds()` 就会把活动种子当普通作物暴露给种植策略，可能被自动种植消耗。
   补录表只参与展示，不参与选种。
-- 贴图是本地手绘替代。官方 `Crop_307` 贴图需要先拿到 bundle 版本号（见下一节「资源 URL 嗅探代理」），
-  抓到后用 `tools/download-game-images.js` 取官方 astc 并转 PNG，再删掉 `activity-crops.ts` 和这两张图。
+- 贴图最初是本地手绘替代；2026-11-27 已换成**官方贴图**（从手机缓存取 `Crop_307_Seed` 的 astc 解码，
+  见「官方贴图（已拿到）」一节与 `docs/asset-from-phone-cache.md`）。
 - `image_phase` 未改：缺 `grow_phases` 时沿用服务端粗状态，与现有兜底一致。
 
 ---
@@ -310,7 +310,7 @@ cd core && npx tsc --noEmit && npx tsc && node --test tests/activity-crop-planti
 果实 40307 未被误判为种子: true
 ```
 
-### 官方贴图（待补）
+### 官方贴图（已拿到，2026-11-27）
 
 背包图标与种子的资源名按官方命名规律可确定：
 
@@ -319,8 +319,31 @@ cd core && npx tsc --noEmit && npx tsc && node --test tests/activity-crop-planti
 1040307        -> asset_name = gold/Crop_307    （对照 40304=Crop_304、1040304=gold/Crop_304）
 ```
 
-但这两个 sprite 在 `plant` bundle 的 `model/v4/...` 下（`mainscene` / `extraRes` 里只有 `model/v3` 场景资源），
-而 bundle 版本号只存在于客户端 `settings.json`，需要一次抓包获取。拿到后：
+**落地方式：不抓包，直接从手机缓存取**（完整流程见 `docs/asset-from-phone-cache.md`）。
+
+微信小游戏把 Cocos bundle 明文缓存在
+`/sdcard/Android/data/com.tencent.mm/MicroMsg/wxanewfiles/<账号hash>/gamecaches/plant/`：
+
+- manifest（`paths` / `uuids` / `versions`）是明文 JSON，可查到 `Crop_307_Seed` 的 uuid 与 hash
+- 贴图是 `*.astc`，用 `astcenc -dl` 解码
+- 红薯种子图缓存文件：`1795661844979146.astc`（100×100）
+
+已替换的贴图：
+
+| 文件 | 来源 |
+|---|---|
+| `20307.png` | 官方 `Crop_307_Seed` 原图（100×100） |
+| `40307.png` | 同上 |
+| `1020307.png` | 同上（田间作物图集本次未进缓存，暂用种子图） |
+| `1040307.png` | 官方图做金色调色（保留官方边线和光晕） |
+
+#### 旧思路（走不通，留作记录）
+
+`plant` bundle 的 `model/v4/...` 资源拿不到，因为 bundle 版本号只在客户端 `settings.json`，
+而 CDN 的 `remote/<bundle>/native/**` 全部 404（有防盗链），只有 `config.<hash>.json` 可下载。
+
+抓包这条路在未 root 的 Android 上行不通：Android 7+ 的 App 默认只信任系统 CA，
+微信原生网络栈不信任用户安装的证书，Fiddler 只能看到 CONNECT 隧道。
 
 ```bash
 # 只下这 3 张：造一个只含活动条目的临时配置目录，避免重下 1400+ 张既有图
@@ -370,6 +393,73 @@ node tools/download-game-images.js \
 注意只有 **种植策略 = 背包种子优先**（`bag_priority`）时才展示活动种子：
 纯商店策略（`preferred`）走 `findBestSeed()` 买种子，活动种子不可购买，
 放进去只会变成「选了没反应」的假选项。
+
+---
+
+## 官方配置与贴图对齐（2026-11-27）
+
+### 动机
+
+手机缓存（`.capture/phone/`，见 `docs/asset-from-phone-cache.md`）里有比仓库更新的官方资源：
+plant bundle 的 131 张 astc 贴图、mainscene 里的配置 TextAsset。上一轮只把红薯一株手工补进去了，
+这次把「能官方化的部分」全部对齐。
+
+### 关键发现：配置不是靠猜的
+
+`mainscene` 里的 `Plant` / `ItemInfo` 是 `cc.TextAsset`，`text` 字段 base64 后熵 6.9 —— 加密过的，
+解不开。但**上游仓库 `muyuewang/main` 已经有新配置**，直接对齐比逆向加密省事得多：
+
+```
+git fetch muyuewang main
+git show FETCH_HEAD:core/src/gameConfig/EventPlants.json
+```
+
+`EventPlants.json` 是官方的**活动 / 节令作物表**，仓库里一直缺这个文件。字段是平铺的
+（`fruit_id` / `fruit_count`），并且带 `asset_name`（如 `Crop_307`）—— 这正是贴图资源名。
+
+```json
+{"id":1020307,"seed_id":20307,"fruit_id":40307,"asset_name":"Crop_307","name":"红薯"}
+```
+
+### 改动
+
+| 文件 | 内容 |
+|---|---|
+| `core/src/gameConfig/ItemInfo.json` | 同步上游，+5 条：`1032 蜜薯`、`1033 福气币`、`20307 红薯种子`、`40307 红薯`、`1040307 黄金·红薯`（其余 1176 条逐字节未变） |
+| `core/src/gameConfig/EventPlants.json` | 新增，34 条活动作物；其中 `1020307 红薯`、`1020207 绣球花`、`1060032 金盏花` 是 `Plant.json` 里没有的 |
+| `core/src/config/gameConfig.ts` | 新增 `eventPlantMap` / `eventSeedToPlant` / `eventFruitToPlant` / `eventAssetNameMap`；`loadConfigs()` 里加载 EventPlants；新增 `findPlant()` 统一「主表 → 活动表」查找，`getPlantById` / `getPlantName` / `getPlantGrowTime` / `getPlantGrowPhases` / `getPlantExp` 全部改用它 |
+| 贴图 16 组（48 个 png） | `20522 20523 20525 20526 20527 20528 20529 20530 29003 29005 21435 20129 20121 20109 20021 20416` 换成官方新版，种子/果实/作物三个文件名同步 |
+
+### 关键取舍
+
+**EventPlants 不并入 `seedToPlant`。** 并进去 `getAllSeeds()` 就会把限时活动种子当成常驻商店
+商品暴露给种植策略，可能触发买不到的购买请求。只在 `findPlant` / `getPlantBySeedId` 做兜底。
+
+**只换 diff > 10 的贴图。** 用「项目旧图 ↔ 官方解码图」的内容距离筛：
+- `<= 3`：同一张图，只是 ASTC 有损压缩的差别 → 不覆盖（项目里的无损 PNG 质量更好）
+- `3 ~ 10`：图案一致，构图/色差毫厘 → 不覆盖，同上
+- `> 10`：美术改版 → 覆盖
+
+16 组全部肉眼核对过是同一作物的新旧两版（例如 `20527 森野甜橙` 旧版是切开的橙子、新版是整颗 + 金色版）。
+
+**作物生长参数拿不到。** EventPlants 里活动作物只有骨架字段（id / seed_id / fruit_id / asset_name / name），
+没有 `grow_phases` / `exp` / `fruit_count`。这些由服务端下发，配置里本来就没有，展示成 0 与原补录表一致，不算退化。
+
+### 复核
+
+```bash
+node --test core/tests/activity-crop-*.test.js     # 11 项全过
+node --test core/tests/*.test.js                   # 372 项，17 失败（均为既有，与本改动无关）
+```
+
+```js
+// dist 下实际验证
+const g = require('./core/dist/config/gameConfig');
+g.getPlantName(1020307);            // '红薯'（来自 EventPlants）
+g.getPlantBySeedId(20307).grow_phases; // ''（官方未下发）
+g.getAllSeeds().some(s => s.seedId === 20307); // false，没污染商店列表
+g.getItemById(40307).name;          // '红薯'（来自 ItemInfo）
+```
 
 ---
 
