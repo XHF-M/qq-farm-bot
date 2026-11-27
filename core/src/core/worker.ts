@@ -1521,11 +1521,24 @@ function syncStatus(force: boolean = false): void {
     const friendQuiet = !!visitStrategy.inFriendQuietHours();
     const farmQuiet = !!visitStrategy.inFarmQuietHours();
     // 牧场是独立的低频轮次（间隔 ranch_check_minutes），牧场概览用它显示巡查倒计时。
-    // nextCheckAt 可能为 Infinity（本轮没有待办），JSON 里会变成 null，因此显式转成 null。
     // 这段只做展示，任何异常都不能影响状态上报。
     let ranchRoutine: any = null;
     try { ranchRoutine = ranchAutomation.getRoutineState(); } catch { ranchRoutine = null; }
     const ranchNextCheckAt = Number(ranchRoutine?.nextCheckAt);
+    const ranchIntervalSec = Math.max(60, Math.round((Number(getAutomation().ranch_check_minutes) || 5) * 60));
+    let ranchRemainSec: number | null;
+    if (Number.isFinite(ranchNextCheckAt) && ranchNextCheckAt > 0) {
+        // 真实排期：本轮起点 + 间隔，或动物关键时间点，按原值上报。
+        ranchRemainSec = Math.max(0, Math.ceil((ranchNextCheckAt - nowMs) / 1000));
+    } else if (ranchNextCheckAt === 0) {
+        // 账号刚登录、首轮还没排期（resetSchedule 把 nextCheckAt 置 0）。
+        // 用配置间隔算一个「本周期内下次巡查」的展示值，避免概览一直停在「待巡查」。
+        // 用绝对时间取模对齐，服务端每 3 秒校准时数值连续，不会跳回整周期。
+        ranchRemainSec = ranchIntervalSec - Math.floor((nowMs / 1000) % ranchIntervalSec);
+    } else {
+        // Infinity / NaN：本轮确实没有待办，交给前端显示「暂无待办」。
+        ranchRemainSec = null;
+    }
     fullStats.nextChecks = {
         farmRemainSec,
         helpRemainSec: friendRemainSec,
@@ -1535,7 +1548,7 @@ function syncStatus(force: boolean = false): void {
         friendQuiet,
         helpQuiet: friendQuiet,
         stealQuiet: friendQuiet,
-        ranchRemainSec: Number.isFinite(ranchNextCheckAt) ? Math.max(0, Math.ceil((ranchNextCheckAt - nowMs) / 1000)) : null,
+        ranchRemainSec,
         ranchIdle: !!ranchRoutine?.doneToday,
     };
 

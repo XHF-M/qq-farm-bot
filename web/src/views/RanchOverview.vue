@@ -123,11 +123,12 @@ function renderRanchCountdown() {
     return
   }
   if (localRanchRemainSec === null) {
-    nextRanchCheck.value = ranchIdle ? '暂无待办' : '待命中'
+    nextRanchCheck.value = ranchIdle ? '暂无待办' : '等待排期'
     return
   }
-  // 剩余 0 表示排期已到、在等调度（牧场是低优先级轮次，可能让路几秒），不是「正在巡查」。
-  nextRanchCheck.value = localRanchRemainSec > 0 ? formatClock(localRanchRemainSec) : '待巡查'
+  // 归零只代表排期已到、正在等调度让路（低优先级轮次可能让路几秒）。
+  // 显示 00:00:00 而不是「待巡查 / 巡查中」这类状态文字，避免看起来像卡住。
+  nextRanchCheck.value = formatClock(localRanchRemainSec)
 }
 
 function tickRanchCountdown() {
@@ -138,10 +139,12 @@ function tickRanchCountdown() {
 
 watch(() => status.value?.nextChecks, (nextChecks) => {
   // 字段缺失说明后端还是旧版本，此时显示占位而不是「待命中」。
-  ranchReported = !!nextChecks && (nextChecks as any).ranchRemainSec !== undefined
-  const remainSec = Number(nextChecks?.ranchRemainSec)
+  const raw = (nextChecks as any)?.ranchRemainSec
+  ranchReported = !!nextChecks && raw !== undefined
+  // null 表示本轮无排期；Number(null) 是 0，必须先挡掉，否则会被当成「剩余 0 秒」显示「待巡查」。
+  const remainSec = raw === null || raw === undefined ? Number.NaN : Number(raw)
   localRanchRemainSec = Number.isFinite(remainSec) ? Math.max(0, Math.floor(remainSec)) : null
-  ranchIdle = nextChecks?.ranchIdle === true
+  ranchIdle = (nextChecks as any)?.ranchIdle === true
   renderRanchCountdown()
 }, { immediate: true })
 
