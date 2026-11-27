@@ -387,26 +387,32 @@ function buildLandDetail(land: any, options: { friendMode?: boolean; landsMap?: 
         : null;
     const matureBegin = maturePhase ? toTimeSec(maturePhase.begin_time) : 0;
     const matureInSec = matureBegin > nowSec ? matureBegin - nowSec : 0;
-    // 生长阶段：phase_index 来自「配置总阶段数 - 服务端剩余阶段数」，
-    // 而 phases 是从当前阶段开始的后缀，所以 phases[1] 就是下一阶段的起点时间。
+    // 生长阶段：phases 是「从当前阶段开始的后缀」，但每段的 phase 字段只是粗状态
+    // （生长中=2 / 成熟=6），不含阶段名与序号 —— 序号只能自己反推：
+    //   当前第几段 = 总阶段数 - 剩余段数 + 1
+    // phases[1] 是下一阶段的起点时间，直接用。
+    // 有 Plant.json 配置时总阶段数取 grow_phases 长度；活动作物（红薯等）没有配置，
+    // 按官方统一的六阶段阶梯：种子 / 发芽 / 小叶 / 大叶 / 初熟 / 成熟。
     const growPhases = getPlantGrowPhases(plantId);
     const phaseIndexRaw = toNum(currentPhase.phase_index);
-    // 活动 / 限时作物没有 Plant.json 条目，取不到 grow_phases。此时 phases 是
-    // 「从当前阶段开始的配置后缀」，长度即剩余阶段数（含当前），可据此反推：
-    //   总阶段 = 剩余阶段数 + 当前阶段枚举值 - 1
-    // 成熟 / 枯死时后缀会退化（只剩一段但枚举值仍是 6），不做反推，只留阶段名。
     const suffixPhaseCount = Array.isArray(plant.phases) ? plant.phases.length : 0;
-    const serverPhaseVal = toNum((currentPhase as any).server_phase) || phaseVal;
-    const isFinalPhase = phaseVal === PlantPhase.MATURE || phaseVal === PlantPhase.DEAD;
-    const derivedTotal = !growPhases.length && !isFinalPhase && suffixPhaseCount > 0 && serverPhaseVal > 0
-        ? suffixPhaseCount + serverPhaseVal - 1
-        : 0;
-    const phaseTotal = growPhases.length || derivedTotal;
-    const phaseIndex = phaseTotal <= 0
+    const isDead = phaseVal === PlantPhase.DEAD;
+    const phaseTotal = growPhases.length
+        || (suffixPhaseCount > 0 || phaseVal === PlantPhase.MATURE ? OFFICIAL_PHASE_TOTAL : 0);
+    const phaseIndex = isDead || phaseTotal <= 0
         ? 0
         : growPhases.length > 0 && phaseIndexRaw >= 0
             ? Math.min(phaseIndexRaw + 1, phaseTotal)
-            : Math.min(Math.max(serverPhaseVal, 1), phaseTotal);
+            : suffixPhaseCount > 0
+                ? Math.min(Math.max(phaseTotal - suffixPhaseCount + 1, 1), phaseTotal)
+                // 成熟后服务端可能不再下发阶段数组，此时直接落到最后一段。
+                : phaseVal === PlantPhase.MATURE ? phaseTotal : 0;
+    const configuredPhase = phaseIndex > 0 ? growPhases[phaseIndex - 1] : null;
+    const phaseName = isDead
+        ? PHASE_NAMES[PlantPhase.DEAD]
+        : configuredPhase
+            ? normalizePhaseName(configuredPhase.name)
+            : OFFICIAL_PHASE_NAMES[phaseIndex] || '';
     const nextPhase = Array.isArray(plant.phases) ? plant.phases[1] : null;
     const nextPhaseBegin = nextPhase ? toTimeSec(nextPhase.begin_time) : 0;
     const phaseRemainSec = nextPhaseBegin > nowSec ? nextPhaseBegin - nowSec : 0;
@@ -429,7 +435,7 @@ function buildLandDetail(land: any, options: { friendMode?: boolean; landsMap?: 
         plantName,
         seedId,
         seedImage: (seedId > 0 ? getSeedImageBySeedId(seedId) : '') || String(activityCrop?.image || ''),
-        phaseName: currentPhase.phaseName || PHASE_NAMES[phaseVal] || '',
+        phaseName: phaseName || currentPhase.phaseName || PHASE_NAMES[phaseVal] || '',
         phaseIndex,
         phaseTotal,
         phaseRemainSec,
@@ -483,18 +489,28 @@ function getCurrentPhase(phases: any[], debug?: boolean, landLabel?: string, pla
 }
 
 /**
- * 活动 / 限时作物（红薯、活动果等）在 Plant.json 里没有条目，拿不到 grow_phases。
- * 协议阶段枚举是固定的，这里给出游戏内通用叫法，避免界面落到「小叶」这种简写。
+ * 官方客户端的作物阶段是固定六段：种子 / 发芽 / 小叶 / 大叶 / 初熟 / 成熟。
+ * 活动 / 限时作物（红薯、活动果等）在 Plant.json 里没有条目，拿不到 grow_phases，
+ * 只能按这套梯度 +「剩余段数」反推当前名次。
  */
-const GENERIC_PHASE_NAMES: Record<number, string> = {
+const OFFICIAL_PHASE_TOTAL = 6;
+const OFFICIAL_PHASE_NAMES: Record<number, string> = {
     1: '种子',
     2: '发芽',
-    3: '小叶子',
-    4: '大叶子',
-    5: '开花',
+    3: '小叶',
+    4: '大叶',
+    5: '初熟',
     6: '成熟',
-    7: '枯死',
 };
+
+/** 配置里写作「小叶子 / 大叶子」，官方界面是「小叶 / 大叶」，展示时统一成短名。 */
+const PHASE_NAME_ALIASES: Record<string, string> = {
+    小叶子: '小叶',
+    大叶子: '大叶',
+};
+function normalizePhaseName(name: string): string {
+    return PHASE_NAME_ALIASES[name] || name;
+}
 
 /**
  * phases 是从当前阶段开始的配置后缀，因此当前配置下标等于：
@@ -540,7 +556,12 @@ function convertServerPhaseToClient(phases: any[], serverPhaseInfo: any, plantId
         phase: clientPhase,
         phaseName: serverPhase === PlantPhase.DEAD
             ? PHASE_NAMES[PlantPhase.DEAD]
-            : (configuredPhase && configuredPhase.name) || GENERIC_PHASE_NAMES[clientPhase] || PHASE_NAMES[clientPhase],
+            : configuredPhase
+                ? normalizePhaseName(configuredPhase.name)
+                : OFFICIAL_PHASE_NAMES[remainingCount > 0
+                    ? Math.min(Math.max(OFFICIAL_PHASE_TOTAL - remainingCount + 1, 1), OFFICIAL_PHASE_TOTAL)
+                    : 0]
+                    || PHASE_NAMES[clientPhase],
     };
 }
 

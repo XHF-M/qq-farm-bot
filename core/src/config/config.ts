@@ -316,7 +316,7 @@ const PlantPhase = {
     DEAD: 7,
 } as const;
 
-const PHASE_NAMES: string[] = ['未知', '种子', '发芽', '小叶', '大叶', '开花', '成熟', '枯死'];
+const PHASE_NAMES: string[] = ['未知', '种子', '发芽', '小叶', '大叶', '初熟', '成熟', '枯死'];
 
 module.exports = {
     CONFIG,
