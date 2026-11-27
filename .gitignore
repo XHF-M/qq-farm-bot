@@ -75,3 +75,7 @@ __pycache__/
 
 # Local deploy credentials (never commit)
 **/.deploy.env
+
+# 本机启动脚本：各人环境不同，不入库。
+# 也避免 redeploy.py 的 `git stash -u` 每次把它卷进 stash（中途失败可能丢本地改动）。
+/start-local.bat

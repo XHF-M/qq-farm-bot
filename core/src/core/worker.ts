@@ -113,10 +113,24 @@ let unifiedSchedulerRunning: boolean = false;
 let unifiedTickGeneration: number | null = null;
 let farmTaskRunning: boolean = false;
 let nextFarmRunAt: number = 0;
+// 农场轮次的开始时间，用来识别「跑飞了没返回」（见 FARM_STUCK_MS）。
+let farmTaskStartedAt: number = 0;
 let friendTaskRunning: boolean = false;
 let nextFriendRunAt: number = 0;
+// 好友轮次的开始时间，用来识别「跑飞了没返回」的情况（见 FRIEND_STUCK_MS）。
+let friendTaskStartedAt: number = 0;
 // 网关卡住时各定时任务的退避时长（毫秒），0 表示按正常间隔跑
 const businessBackoffMs: Record<string, number> = { farm: 0, friend: 0, ranch: 0 };
+// 牧场 overdue 超过这个时长就不再为农场/好友让路、也不再等网关「完全空闲」。
+// 农场轮次间隔只有 12-15 秒，网关几乎不会出现 isGatewayIdleForLowPriority 为真的窗口。
+const RANCH_STARVE_MS: number = 2 * 60_000;
+// 好友轮次正常几十秒内结束；超过这个时长还在 running，就认为它卡住了（请求不回包），
+// 不能让它把牧场无限期拖死。
+const FRIEND_STUCK_MS: number = 3 * 60_000;
+// 农场轮次同理：runFarmTick 卡在某个不回包的请求上时，farmTaskRunning 会永久为 true。
+const FARM_STUCK_MS: number = 3 * 60_000;
+// runUnifiedTick 里 await 农场轮次的上限：超过就先去跑牧场/好友，避免整个统一调度器停摆。
+const FARM_TICK_AWAIT_MAX_MS: number = 60_000;
 let lastStatusHash: string = '';
 let lastStatusSentAt: number = 0;
 let onSellGain: ((deltaGold: any) => void) | null = null;
@@ -131,13 +145,25 @@ let runtimeGeneration: number = 0;
 let lastDailyRunDate: string = '';
 let ranchRoutineQueued = false;
 let initialFarmCheckDone = false;
-let initialFriendCheckDone = false;
 let ranchDeferredUntil = 0;
 
+function friendTaskStuck(): boolean {
+    return friendTaskRunning && Date.now() - friendTaskStartedAt >= FRIEND_STUCK_MS;
+}
+
+function farmTaskStuck(): boolean {
+    return farmTaskRunning && Date.now() - farmTaskStartedAt >= FARM_STUCK_MS;
+}
+
 function ranchNextRunAt(): number {
-    // 首轮农场和好友巡查先完成；长好友轮次的访问间隔也不插入场景切换。
-    if (!unifiedSchedulerRunning || ranchRoutineQueued || farmTaskRunning || friendTaskRunning
-        || !initialFarmCheckDone || !initialFriendCheckDone) return Infinity;
+    // 首轮农场巡查先完成；长好友轮次的访问间隔也不插入场景切换。
+    // 这里只依赖「农场首轮完成」，不再依赖好友首轮：好友轮次只要一次没跑完（网关卡住），
+    // 那个标记就永远是 false，牧场会被无限期锁死。牧场不需要好友跑完也能独立进场景。
+    // 两个 running 标记都要有上限：请求不回包时它们会一直为 true，把牧场拖死。
+    if (!unifiedSchedulerRunning || ranchRoutineQueued
+        || (farmTaskRunning && !farmTaskStuck())
+        || (friendTaskRunning && !friendTaskStuck())
+        || !initialFarmCheckDone) return Infinity;
     const state = ranchAutomation.getRoutineState();
     return Math.max(state.nextCheckAt, ranchDeferredUntil);
 }
@@ -164,6 +190,27 @@ function onRanchFacilitiesChanged(facilities: any[]): void {
     if (ranchAutomation.noteRanchFacilities(facilities)) scheduleUnifiedNextTick();
 }
 
+let lastRanchGateTraceAt = 0;
+/**
+ * 牧场调度诊断（「牧场这一个轮次卡在哪道闸门」）。
+ *
+ * 默认完全关闭：正常每轮都会走到某个分支（没到点 / 没待办 / 让路农场），
+ * 开着会按 30 秒一条一直刷，属于噪音。
+ * 排「牧场不跑」时用 `FARM_DEBUG_SCHED=1` 启动即可打开，30 秒限流一条。
+ */
+function traceRanchGate(step: string, extra: Record<string, any> = {}): void {
+    if (process.env.FARM_DEBUG_SCHED !== '1') return;
+    if (Date.now() - lastRanchGateTraceAt < 30000) return;
+    lastRanchGateTraceAt = Date.now();
+    log('牧场', `[牧场闸门] ${step}`, {
+        module: 'ranch', event: 'ranch_gate_trace', result: 'debug',
+        farmRunning: farmTaskRunning, friendRunning: friendTaskRunning, friendStuck: friendTaskStuck(),
+        farmInitial: initialFarmCheckDone, queued: ranchRoutineQueued, loginReady,
+        deferredInSec: Math.round((ranchDeferredUntil - Date.now()) / 1000),
+        ...extra,
+    });
+}
+
 function runRanchRoutine(detached = false): Promise<void> {
     if (!loginReady || Date.now() < ranchNextRunAt()) return Promise.resolve();
     const generation = runtimeGeneration;
@@ -171,20 +218,39 @@ function runRanchRoutine(detached = false): Promise<void> {
     return runExclusiveAutomationTask('ranch_routine', async () => {
         if (!loginReady || generation !== runtimeGeneration) return;
         // 排队期间农场可能已到期，拿到锁后重新判断，避免空切一次牧场。
-        if (farmTaskRunning || friendTaskRunning || Date.now() >= Math.min(nextFarmRunAt, nextFriendRunAt)) return;
+        if (farmTaskRunning && !farmTaskStuck() || friendTaskRunning && !friendTaskStuck()) { traceRanchGate('skip-busy'); return; }
+        const state = ranchAutomation.getRoutineState();
+        if (state.doneToday) { traceRanchGate('skip-doneToday'); return; }
+        // 牧场 overdue 多久。nextCheckAt 为 0 表示本轮排期还没开始（刚登录），
+        // 这时算「已饿很久」，不要再给农场/好友的临时占用无限让路。
+        const overdueMs = Date.now() - Number(state.nextCheckAt || 0);
+        const starving = overdueMs >= RANCH_STARVE_MS;
+        // 农场/好友刚好到期：正常情况下让路，避免空切一次牧场；饿太久则照跑。
+        if (!starving && Date.now() >= Math.min(nextFarmRunAt, nextFriendRunAt)) { traceRanchGate('skip-yield-due'); return; }
         const deferMs = nextBusinessTickDeferMs('ranch');
         if (deferMs > 0) {
             ranchDeferredUntil = Date.now() + deferMs;
+            traceRanchGate('skip-backoff', { deferMs });
             return;
         }
-        if (!isGatewayIdleForLowPriority(getGatewayLoad())) {
+        // 低优先级只在网关完全空闲时才跑，但「完全空闲」在农场高频轮次里可能永远不出现，
+        // 所以饿过 STARVE_MS 就退化到「只要业务健康就跑」，否则牧场会被永久饿死。
+        if (!starving && !isGatewayIdleForLowPriority(getGatewayLoad())) {
             ranchDeferredUntil = Date.now() + 1000;
+            traceRanchGate('skip-not-idle');
             return;
         }
-        const state = ranchAutomation.getRoutineState();
-        if (state.doneToday || Date.now() < state.nextCheckAt) return;
+        if (!isGatewayHealthyForBusiness(getGatewayLoad())) {
+            ranchDeferredUntil = Date.now() + 5000;
+            traceRanchGate('skip-unhealthy');
+            return;
+        }
+        if (Date.now() < state.nextCheckAt) return;
+        // 真的进场景了才记一条，5 分钟一轮最多一条，用于确认牧场确实在跑。
+        traceRanchGate('run', { starving });
         await runWithRequestClass('friend', () => ranchAutomation.run({
-            farmDeadline: () => Math.min(nextFarmRunAt, friendTaskRunning ? Date.now() : nextFriendRunAt),
+            // 好友卡住时不能再把 deadline 设成「现在」，否则牧场每一轮都会立刻让路。
+            farmDeadline: () => Math.min(nextFarmRunAt, friendTaskRunning && !friendTaskStuck() ? Date.now() : nextFriendRunAt),
             canContinue: () => loginReady && generation === runtimeGeneration && isGatewayHealthyForBusiness(getGatewayLoad()),
         }));
     }, { detached }).finally(() => {
@@ -342,6 +408,7 @@ async function runFarmTick(auto: any): Promise<void> {
         return;
     }
     farmTaskRunning = true;
+    farmTaskStartedAt = Date.now();
     const farmMs = randomIntervalMs(
         CONFIG.farmCheckIntervalMin || CONFIG.farmCheckInterval || 2000,
         CONFIG.farmCheckIntervalMax || CONFIG.farmCheckInterval || 2000
@@ -359,6 +426,7 @@ async function runFarmTick(auto: any): Promise<void> {
     } finally {
         nextFarmRunAt = Date.now() + farmMs;
         farmTaskRunning = false;
+        farmTaskStartedAt = 0;
         initialFarmCheckDone = true;
     }
 }
@@ -374,7 +442,6 @@ async function runFriendTick(auto: any): Promise<void> {
     // friend 总开关仍控制好友任务总入口；关闭时也要推进到期时间，避免调度器每秒空转。
     if (!auto.friend) {
         nextFriendRunAt = Date.now() + friendMs;
-        initialFriendCheckDone = true;
         return;
     }
 
@@ -385,6 +452,15 @@ async function runFriendTick(auto: any): Promise<void> {
     }
 
     friendTaskRunning = true;
+    friendTaskStartedAt = Date.now();
+    // 好友轮次卡住（请求不回包）时至少留一条可观测日志，牧场会按 FRIEND_STUCK_MS 自行绕过。
+    const stuckTimer = setTimeout(() => {
+        if (!friendTaskRunning) return;
+        logWarn('系统', `好友巡查已运行 ${Math.round((Date.now() - friendTaskStartedAt) / 1000)}s 仍未结束，牧场先绕过它`, {
+            module: 'system', event: '好友任务超时', result: 'stalled',
+        });
+    }, FRIEND_STUCK_MS);
+    stuckTimer.unref?.();
     try {
         // checkFriends 内部保留各自开关、经验上限、黑名单和每日捣乱次数判断。
         // 好友农场任务排在自己农场之后，前台操作永远优先于它。
@@ -392,17 +468,18 @@ async function runFriendTick(auto: any): Promise<void> {
     } catch (e: any) {
         log('系统', `好友统一任务执行失败: ${e.message}`, { module: 'system', event: '好友统一任务', result: 'error' });
     } finally {
+        clearTimeout(stuckTimer);
+        friendTaskStartedAt = 0;
         if (generation === runtimeGeneration) {
             nextFriendRunAt = Date.now() + friendMs;
             friendTaskRunning = false;
-            initialFriendCheckDone = true;
             scheduleUnifiedNextTick();
         }
     }
 }
 
 async function runUnifiedTick(): Promise<void> {
-    if (!unifiedSchedulerRunning || !loginReady) return;
+    if (!unifiedSchedulerRunning || !loginReady) { traceRanchGate('tick-skip-pre', { unifiedSchedulerRunning }); return; }
     const generation = runtimeGeneration;
     const now = Date.now();
     const dueFarm = now >= nextFarmRunAt;
@@ -411,8 +488,20 @@ async function runUnifiedTick(): Promise<void> {
 
     const auto = getAutomation();
     // 好友按单次访问持锁，等待间隔不阻塞后续农场巡查。
-    if (dueFarm) await runExclusiveAutomationTask('farm_tick', () => runFarmTick(auto));
-    if (!unifiedSchedulerRunning || !loginReady || generation !== runtimeGeneration) return;
+    // 农场轮次卡在无回包的请求上时，不能让这个 await 把统一调度器一起卡死（那样牧场/好友全停），
+    // 所以最多等 FARM_TICK_AWAIT_MAX_MS，超时就先继续往下跑。
+    if (dueFarm) {
+        const farmTick = runExclusiveAutomationTask('farm_tick', () => runFarmTick(auto));
+        farmTick.catch(() => undefined);
+        await Promise.race([
+            farmTick,
+            new Promise<void>((resolve) => {
+                const timer = setTimeout(resolve, FARM_TICK_AWAIT_MAX_MS);
+                timer.unref?.();
+            }),
+        ]);
+    }
+    if (!unifiedSchedulerRunning || !loginReady || generation !== runtimeGeneration) { traceRanchGate('tick-skip-after-farm', { generationChanged: generation !== runtimeGeneration }); return; }
     if (dueFriend && !friendTaskRunning) void runFriendTick(auto);
     void runRanchRoutine(true).catch((error: any) => logWarn('牧场', `牧场例程失败：${error.message}`));
 }
@@ -449,7 +538,6 @@ function scheduleUnifiedNextTick(): void {
 function startUnifiedScheduler(): void {
     if (unifiedSchedulerRunning) return;
     initialFarmCheckDone = false;
-    initialFriendCheckDone = false;
     ranchDeferredUntil = 0;
     businessBackoffMs.ranch = 0;
     unifiedSchedulerRunning = true;
@@ -1432,6 +1520,12 @@ function syncStatus(force: boolean = false): void {
     const visitStrategy = require('../services/friend/visit-strategy');
     const friendQuiet = !!visitStrategy.inFriendQuietHours();
     const farmQuiet = !!visitStrategy.inFarmQuietHours();
+    // 牧场是独立的低频轮次（间隔 ranch_check_minutes），牧场概览用它显示巡查倒计时。
+    // nextCheckAt 可能为 Infinity（本轮没有待办），JSON 里会变成 null，因此显式转成 null。
+    // 这段只做展示，任何异常都不能影响状态上报。
+    let ranchRoutine: any = null;
+    try { ranchRoutine = ranchAutomation.getRoutineState(); } catch { ranchRoutine = null; }
+    const ranchNextCheckAt = Number(ranchRoutine?.nextCheckAt);
     fullStats.nextChecks = {
         farmRemainSec,
         helpRemainSec: friendRemainSec,
@@ -1441,6 +1535,8 @@ function syncStatus(force: boolean = false): void {
         friendQuiet,
         helpQuiet: friendQuiet,
         stealQuiet: friendQuiet,
+        ranchRemainSec: Number.isFinite(ranchNextCheckAt) ? Math.max(0, Math.ceil((ranchNextCheckAt - nowMs) / 1000)) : null,
+        ranchIdle: !!ranchRoutine?.doneToday,
     };
 
     fullStats.automation = getAutomation();

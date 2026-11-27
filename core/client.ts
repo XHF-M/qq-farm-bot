@@ -68,7 +68,8 @@ if (isWorkerProcess) {
 
     runtimeEngine.start({
         startAdminServer: true,
-        autoStartAccounts: false,
+        // 默认仍由面板手动「启动」账号；本机/容器想开机即跑时可设 FARM_AUTO_START=1。
+        autoStartAccounts: process.env.FARM_AUTO_START === '1',
     }).catch((err: any) => {
         mainLogger.error('runtime bootstrap failed', { error: err && err.message ? err.message : String(err) });
         void shutdown(1);

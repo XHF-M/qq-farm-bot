@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useIntervalFn } from '@vueuse/core'
 import { NButton } from 'naive-ui/es/button'
 import { storeToRefs } from 'pinia'
 import { computed, ref, watch } from 'vue'
@@ -90,6 +91,62 @@ const todayOperations = computed(() => {
     { key: 'steal', label: '偷取货架', count: operations.steal },
   ]
 })
+
+/** 只看当前账号的状态快照，避免切换账号时读到上一个账号的巡查计划。 */
+const liveStatus = computed(() => String(status.value?.accountId || '') === String(currentAccountId.value || '') ? status.value : null)
+/** 牧场巡查间隔，来自状态里的 automation，不需要额外拉设置。 */
+const ranchCheckMinutes = computed(() => Number(liveStatus.value?.automation?.ranch_check_minutes) || 0)
+
+/**
+ * 下次牧场巡查倒计时：服务端给剩余秒数，本地按秒递减。
+ * null 表示本轮没有排期（服务端 nextCheckAt 为 Infinity），不要显示成 00:00:00。
+ */
+const nextRanchCheck = ref('--:--:--')
+let localRanchRemainSec: number | null = 0
+let ranchIdle = false
+/** 服务端有没有上报过牧场排期字段。没上报（旧后端 / 字段缺失）不能显示成「待命中」，那是误导。 */
+let ranchReported = false
+
+function formatClock(seconds: number) {
+  const total = Math.max(0, Math.floor(seconds))
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return `${pad(Math.floor(total / 3600))}:${pad(Math.floor(total % 3600 / 60))}:${pad(total % 60)}`
+}
+
+function renderRanchCountdown() {
+  if (!isOnline.value) {
+    nextRanchCheck.value = '账号未登录'
+    return
+  }
+  if (!ranchReported) {
+    nextRanchCheck.value = '--:--:--'
+    return
+  }
+  if (localRanchRemainSec === null) {
+    nextRanchCheck.value = ranchIdle ? '暂无待办' : '待命中'
+    return
+  }
+  // 剩余 0 表示排期已到、在等调度（牧场是低优先级轮次，可能让路几秒），不是「正在巡查」。
+  nextRanchCheck.value = localRanchRemainSec > 0 ? formatClock(localRanchRemainSec) : '待巡查'
+}
+
+function tickRanchCountdown() {
+  if (isOnline.value && localRanchRemainSec !== null && localRanchRemainSec > 0)
+    localRanchRemainSec--
+  renderRanchCountdown()
+}
+
+watch(() => status.value?.nextChecks, (nextChecks) => {
+  // 字段缺失说明后端还是旧版本，此时显示占位而不是「待命中」。
+  ranchReported = !!nextChecks && (nextChecks as any).ranchRemainSec !== undefined
+  const remainSec = Number(nextChecks?.ranchRemainSec)
+  localRanchRemainSec = Number.isFinite(remainSec) ? Math.max(0, Math.floor(remainSec)) : null
+  ranchIdle = nextChecks?.ranchIdle === true
+  renderRanchCountdown()
+}, { immediate: true })
+
+watch(isOnline, renderRanchCountdown)
+useIntervalFn(tickRanchCountdown, 1000)
 
 function facilityMeter(f: any) {
   if (f.state === 2)
@@ -197,6 +254,25 @@ function facilityMeter(f: any) {
         <RunLogCard />
 
         <div class="min-w-0 flex flex-col gap-6 md:w-1/4">
+          <!-- 下次巡查：牧场是独立低频轮次，倒计时口径与农场概览一致 -->
+          <section class="farm-card rounded-2xl p-5" aria-live="off">
+            <h3 class="mb-4 flex items-center gap-2 text-lg font-display font-medium">
+              <span class="i-carbon-time" aria-hidden="true" /> <span>下次巡查倒计时</span>
+            </h3>
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-2 text-gray-700 dark:text-gray-300">
+                <span class="i-carbon-pet-image-o text-lg text-amber-500" aria-hidden="true" />
+                <span>牧场</span>
+              </div>
+              <div class="text-lg tabular-nums font-bold">
+                {{ nextRanchCheck }}
+              </div>
+            </div>
+            <p v-if="ranchCheckMinutes" class="mt-3 text-xs text-gray-500 dark:text-gray-400">
+              每 {{ ranchCheckMinutes }} 分钟巡查一次，可在牧场自动化设置里调整
+            </p>
+          </section>
+
           <section v-if="todayOperations.length" class="farm-card rounded-2xl p-5">
             <h3 class="mb-3 flex items-center gap-2 text-lg font-display font-medium">
               <span class="i-carbon-chart-column" aria-hidden="true" />今日收益统计
