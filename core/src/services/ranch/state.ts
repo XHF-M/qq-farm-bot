@@ -37,6 +37,16 @@ async function resourceBalance(raw: any, id: number): Promise<any> {
     return raw.diamondBalance;
 }
 
+// 牧场成长阶段：stage 由服务端推进，1 幼崽期 → 2 成长期 → 3 生产期 → 4 成熟期。
+// 0 表示刚入栏尚未开始计时，仍按幼崽期算；阶段数固定 4，供前端显示「第 n/4 阶段」。
+const RANCH_GROWTH_STAGES = ['幼崽期', '成长期', '生产期', '成熟期'];
+
+function growthStageInfo(stageVal: any): { growthStage: number, growthStageName: string, growthStageTotal: number } {
+    const raw = Math.max(0, Number(stageVal) || 0);
+    const index = raw <= 1 ? 1 : Math.min(raw, RANCH_GROWTH_STAGES.length);
+    return { growthStage: index, growthStageName: RANCH_GROWTH_STAGES[index - 1], growthStageTotal: RANCH_GROWTH_STAGES.length };
+}
+
 function animalDto(animal: any): any {
     const cfg = animalMap.get(Number(animal.animal_id));
     const stageNames = ['未知', '幼崽期', '成长期', '生产期', '成熟期', '可收获'];
@@ -47,6 +57,7 @@ function animalDto(animal: any): any {
         id: animal.animal_inst_id, ranchId: quantity(animal.ranch_inst_id), animalId: Number(animal.animal_id), slot: animal.slot_index,
         name: `${mutation?.mutation_type ? '巨大' : ''}${cfg?.name || `动物${animal.animal_id}`}`, image: itemDto({ id: (mutation?.mutation_type && mutationMap.get(Number(animal.animal_id))?.giant_product_item) || cfg?.product_item?.id || Number(animal.animal_id), count: 1 }).image,
         stage: animal.stage, stageName: animal.can_harvest ? '可收获' : animal.can_deliver ? '可生产' : animal.grass_blocked ? '缺少牧草' : stageNames[animal.stage],
+        ...growthStageInfo(animal.stage),
         nextAtMs: nextTimes.length ? Math.min(...nextTimes) : null, deliveringUntilMs, grassBlocked: animal.grass_blocked,
         produceCount: animal.produce_count, maxProduceCount: cfg?.max_produce_count ?? null,
         canProduce: animal.can_deliver, canHarvest: animal.can_harvest, canFeed: animal.can_feed, canRelease: animal.can_donate,

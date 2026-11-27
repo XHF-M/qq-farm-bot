@@ -39,6 +39,25 @@ const rounds = computed(() => {
   const max = Number(props.animal?.maxProduceCount) || 0
   return max > 0 ? { done: Math.min(max, Number(props.animal.produceCount) || 0), max } : null
 })
+
+/** 当前成长阶段：服务端给出 1 幼崽期 → 2 成长期 → 3 生产期 → 4 成熟期。 */
+const phase = computed(() => {
+  const total = Number(props.animal?.growthStageTotal) || 0
+  const index = Number(props.animal?.growthStage) || 0
+  const name = String(props.animal?.growthStageName || '').trim()
+  if (total <= 0 || index <= 0 || !name)
+    return null
+  return { index: Math.min(index, total), total, name }
+})
+
+const phaseTitle = computed(() => {
+  if (!phase.value)
+    return ''
+  const head = `当前阶段：${phase.value.name}（第 ${phase.value.index}/${phase.value.total} 阶段）`
+  if (props.animal?.canHarvest)
+    return `${head}，已可收获`
+  return props.remaining ? `${head}，约 ${props.remaining} 后进入下一阶段` : head
+})
 </script>
 
 <template>
@@ -62,6 +81,12 @@ const rounds = computed(() => {
       <span v-else-if="remaining" class="pen__countdown"><span class="i-carbon-time" aria-hidden="true" />{{ remaining }}</span>
       <span v-else class="pen__state is-muted">{{ animal.stageName }}</span>
     </div>
+
+    <div v-if="phase" class="pen__phase" :title="phaseTitle">
+      <span class="pen__phase-name">{{ phase.name }}</span>
+      <span class="pen__phase-step">{{ phase.index }}/{{ phase.total }}</span>
+    </div>
+    <div v-else class="pen__phase pen__phase--placeholder" aria-hidden="true" />
 
     <div v-if="rounds" class="pen__rounds" :title="`已生产 ${rounds.done} / ${rounds.max} 轮`" :aria-label="`已生产 ${rounds.done} / ${rounds.max} 轮`" role="img">
       <i v-for="n in rounds.max" :key="n" :class="{ 'is-done': n <= rounds.done }" />
@@ -250,6 +275,41 @@ const rounds = computed(() => {
   font-weight: var(--fw-500);
 }
 
+/* 当前成长阶段：干草色小字，和橙色倒计时、绿色生产轮次区分开。 */
+.pen__phase {
+  display: flex;
+  max-width: 100%;
+  height: 15px;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin-top: 2px;
+  color: var(--pen-ink);
+  font-size: 10px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.pen__phase-name {
+  max-width: 58px;
+  overflow: hidden;
+  font-weight: var(--fw-650);
+  text-overflow: ellipsis;
+}
+
+.pen__phase-step {
+  flex: none;
+  padding: 1px 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--pen-ink) 13%, transparent);
+  font-weight: var(--fw-700);
+  font-variant-numeric: tabular-nums;
+}
+
+.pen__phase--placeholder {
+  visibility: hidden;
+}
+
 /* 生产轮次：一轮一格，替代土地卡的成长进度条。 */
 .pen__rounds {
   display: flex;
@@ -318,6 +378,14 @@ const rounds = computed(() => {
 
 .dark .pen__rounds i {
   background: rgba(255, 255, 255, 0.08);
+}
+
+.dark .pen__phase {
+  color: var(--pen-tint);
+}
+
+.dark .pen__phase-step {
+  background: color-mix(in srgb, var(--pen-tint) 18%, transparent);
 }
 
 .dark .pen__rounds i.is-done {

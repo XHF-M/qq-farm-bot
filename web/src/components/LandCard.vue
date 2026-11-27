@@ -134,6 +134,39 @@ function getLandStatusClass(land: any) {
   return baseClass
 }
 
+/**
+ * 当前生长阶段：空地、锁定地块没有阶段可讲，直接不渲染。
+ * 活动作物没有配置表条目时只有阶段名、没有序号，仍然保留阶段名展示。
+ */
+const phase = computed(() => {
+  const status = String(land.value?.status || '')
+  if (status === 'locked' || status === 'empty')
+    return null
+  const total = Number(land.value?.phaseTotal) || 0
+  const index = Number(land.value?.phaseIndex) || 0
+  const name = String(land.value?.phaseName || '').trim()
+  if (!name)
+    return null
+  if (total <= 0 || index <= 0)
+    return { index: 0, total: 0, name }
+  return { index: Math.min(index, total), total, name }
+})
+
+const phaseTitle = computed(() => {
+  if (!phase.value)
+    return ''
+  const remain = Number(land.value?.phaseRemainSec) || 0
+  const { name, index, total } = phase.value
+  const head = total > 0
+    ? `当前阶段：${name}（第 ${index}/${total} 阶段）`
+    : `当前阶段：${name}`
+  if (land.value?.status === 'dead')
+    return `${head}，作物已枯萎`
+  if (remain > 0)
+    return `${head}，约 ${formatTime(remain)} 后进入下一阶段`
+  return total > 0 && index >= total ? `${head}，已是最后阶段` : head
+})
+
 function formatTime(sec: number) {
   if (sec <= 0)
     return ''
@@ -371,6 +404,13 @@ function markMutantIconFailed(effect: any) {
         />
       </div>
     </div>
+
+    <!-- 当前生长阶段 -->
+    <div v-if="phase" class="land-phase" :title="phaseTitle">
+      <span class="land-phase__name">{{ phase.name }}</span>
+      <span v-if="phase.total > 0" class="land-phase__step">{{ phase.index }}/{{ phase.total }}</span>
+    </div>
+    <div v-else class="land-phase land-phase--placeholder" aria-hidden="true" />
 
     <!-- 土地类型、季数与详情入口合并为一行，不再单独占一行。 -->
     <div class="land-meta mt-0.5 flex items-center gap-1.5 text-[10px]">
@@ -997,6 +1037,41 @@ function markMutantIconFailed(effect: any) {
   color: #e9d5ff;
   border-color: rgba(196, 151, 255, 0.34);
   background: linear-gradient(135deg, rgba(88, 49, 121, 0.58), rgba(33, 82, 102, 0.52));
+}
+
+/* ===== 当前生长阶段 ===== */
+.land-phase {
+  display: flex;
+  max-width: 100%;
+  height: 15px;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin-top: 2px;
+  color: var(--ui-muted);
+  font-size: 10px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.land-phase__name {
+  max-width: 62px;
+  overflow: hidden;
+  font-weight: var(--fw-650);
+  text-overflow: ellipsis;
+}
+
+.land-phase__step {
+  flex: none;
+  padding: 1px 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ui-ink) 10%, transparent);
+  font-weight: var(--fw-700);
+  font-variant-numeric: tabular-nums;
+}
+
+.land-phase--placeholder {
+  visibility: hidden;
 }
 
 .land-details-link {

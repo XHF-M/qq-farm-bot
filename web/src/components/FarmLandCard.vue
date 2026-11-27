@@ -92,6 +92,39 @@ const seasonText = computed(() => {
   return total > 1 ? `${Math.max(1, Number(land.value.currentSeason) || 1)}/${total}季` : ''
 })
 
+/**
+ * 当前生长阶段：服务端按作物配置的 grow_phases 推出「第几阶段 / 共几阶段」。
+ * 活动作物没有配置表条目时只有阶段名、没有序号，仍然保留阶段名展示。
+ * 空地、锁定、合种副地没有阶段可讲，统一不渲染。
+ */
+const phase = computed(() => {
+  if (isLocked.value || isEmpty.value || isFollower.value)
+    return null
+  const total = Number(land.value.phaseTotal) || 0
+  const index = Number(land.value.phaseIndex) || 0
+  const name = String(land.value.phaseName || '').trim()
+  if (!name)
+    return null
+  if (total <= 0 || index <= 0)
+    return { index: 0, total: 0, name }
+  return { index: Math.min(index, total), total, name }
+})
+
+const phaseTitle = computed(() => {
+  if (!phase.value)
+    return ''
+  const remain = Number(land.value.phaseRemainSec) || 0
+  const { name, index, total } = phase.value
+  const head = total > 0
+    ? `当前阶段：${name}（第 ${index}/${total} 阶段）`
+    : `当前阶段：${name}`
+  if (status.value === 'dead')
+    return `${head}，作物已枯萎`
+  if (remain > 0)
+    return `${head}，约 ${formatTime(remain)} 后进入下一阶段`
+  return total > 0 && index >= total ? `${head}，已是最后阶段` : head
+})
+
 function safeImage(url: string) {
   return url && url.startsWith('http://') ? url.replace('http://', 'https://') : url
 }
@@ -197,6 +230,8 @@ const ariaLabel = computed(() => {
     parts.push(stateTag.value.text)
   else if (Number(land.value.matureInSec) > 0)
     parts.push(`${formatTime(land.value.matureInSec)} 后成熟`)
+  if (phase.value)
+    parts.push(`阶段 ${phase.value.name} ${phase.value.index}/${phase.value.total}`)
   if (needs.value.length)
     parts.push(needs.value.map(item => item.title).join('、'))
   if (props.selectable && props.selectionDisabled && props.selectionLabel)
@@ -263,6 +298,12 @@ const ariaLabel = computed(() => {
     <div class="plot__bar" aria-hidden="true">
       <i :style="{ width: `${isFollower || isEmpty || isLocked ? 0 : growPercent}%` }" />
     </div>
+
+    <div v-if="phase" class="plot__phase" :title="phaseTitle">
+      <span class="plot__phase-name">{{ phase.name }}</span>
+      <span v-if="phase.total > 0" class="plot__phase-step">{{ phase.index }}/{{ phase.total }}</span>
+    </div>
+    <div v-else class="plot__phase plot__phase--placeholder" aria-hidden="true" />
 
     <footer class="plot__tags" :title="allTitle || undefined">
       <template v-for="(item, index) in visibleTags" :key="item.key">
@@ -631,6 +672,38 @@ const ariaLabel = computed(() => {
   font-variant-numeric: tabular-nums;
 }
 
+/* 当前生长阶段：土壤色系小字，和橙色倒计时、绿色进度条区分开。 */
+.plot__phase {
+  display: flex;
+  height: 16px;
+  max-width: 100%;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin-top: 3px;
+  color: var(--soil-ink);
+  font-size: 10px;
+  line-height: 1;
+  white-space: nowrap;
+}
+.plot__phase-name {
+  max-width: 62px;
+  overflow: hidden;
+  font-weight: var(--fw-650);
+  text-overflow: ellipsis;
+}
+.plot__phase-step {
+  flex: none;
+  padding: 1px 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--soil-ink) 13%, transparent);
+  font-weight: var(--fw-700);
+  font-variant-numeric: tabular-nums;
+}
+.plot__phase--placeholder {
+  visibility: hidden;
+}
+
 /* 深色：深灰卡面，类型色只在顶部渐变、描边和类型标签上 */
 .dark .plot {
   --soil-tint: #9aa3ad;
@@ -670,6 +743,12 @@ const ariaLabel = computed(() => {
 }
 .dark .plot__bar {
   background: rgba(255, 255, 255, 0.08);
+}
+.dark .plot__phase {
+  color: var(--soil-tint);
+}
+.dark .plot__phase-step {
+  background: color-mix(in srgb, var(--soil-tint) 18%, transparent);
 }
 
 @media (prefers-reduced-motion: reduce) {

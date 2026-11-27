@@ -323,6 +323,9 @@ function buildLandDetail(land: any, options: { friendMode?: boolean; landsMap?: 
         needInteractionCleanup: false,
         protocolField40: null,
         leftInorcFertTimes: null,
+        phaseIndex: 0,
+        phaseTotal: 0,
+        phaseRemainSec: 0,
     };
     if (!base.unlocked) {
         return {
@@ -384,6 +387,29 @@ function buildLandDetail(land: any, options: { friendMode?: boolean; landsMap?: 
         : null;
     const matureBegin = maturePhase ? toTimeSec(maturePhase.begin_time) : 0;
     const matureInSec = matureBegin > nowSec ? matureBegin - nowSec : 0;
+    // 生长阶段：phase_index 来自「配置总阶段数 - 服务端剩余阶段数」，
+    // 而 phases 是从当前阶段开始的后缀，所以 phases[1] 就是下一阶段的起点时间。
+    const growPhases = getPlantGrowPhases(plantId);
+    const phaseIndexRaw = toNum(currentPhase.phase_index);
+    // 活动 / 限时作物没有 Plant.json 条目，取不到 grow_phases。此时 phases 是
+    // 「从当前阶段开始的配置后缀」，长度即剩余阶段数（含当前），可据此反推：
+    //   总阶段 = 剩余阶段数 + 当前阶段枚举值 - 1
+    // 成熟 / 枯死时后缀会退化（只剩一段但枚举值仍是 6），不做反推，只留阶段名。
+    const suffixPhaseCount = Array.isArray(plant.phases) ? plant.phases.length : 0;
+    const serverPhaseVal = toNum((currentPhase as any).server_phase) || phaseVal;
+    const isFinalPhase = phaseVal === PlantPhase.MATURE || phaseVal === PlantPhase.DEAD;
+    const derivedTotal = !growPhases.length && !isFinalPhase && suffixPhaseCount > 0 && serverPhaseVal > 0
+        ? suffixPhaseCount + serverPhaseVal - 1
+        : 0;
+    const phaseTotal = growPhases.length || derivedTotal;
+    const phaseIndex = phaseTotal <= 0
+        ? 0
+        : growPhases.length > 0 && phaseIndexRaw >= 0
+            ? Math.min(phaseIndexRaw + 1, phaseTotal)
+            : Math.min(Math.max(serverPhaseVal, 1), phaseTotal);
+    const nextPhase = Array.isArray(plant.phases) ? plant.phases[1] : null;
+    const nextPhaseBegin = nextPhase ? toTimeSec(nextPhase.begin_time) : 0;
+    const phaseRemainSec = nextPhaseBegin > nowSec ? nextPhaseBegin - nowSec : 0;
     const statusFlags = getPlantStatusFlags(plant, currentPhase, nowSec);
     let status = 'growing';
     if (phaseVal === PlantPhase.MATURE) status = friendMode ? (plant.stealable ? 'stealable' : 'harvested') : 'harvestable';
@@ -404,6 +430,9 @@ function buildLandDetail(land: any, options: { friendMode?: boolean; landsMap?: 
         seedId,
         seedImage: (seedId > 0 ? getSeedImageBySeedId(seedId) : '') || String(activityCrop?.image || ''),
         phaseName: currentPhase.phaseName || PHASE_NAMES[phaseVal] || '',
+        phaseIndex,
+        phaseTotal,
+        phaseRemainSec,
         currentSeason,
         totalSeason,
         matureInSec,
@@ -454,6 +483,20 @@ function getCurrentPhase(phases: any[], debug?: boolean, landLabel?: string, pla
 }
 
 /**
+ * 活动 / 限时作物（红薯、活动果等）在 Plant.json 里没有条目，拿不到 grow_phases。
+ * 协议阶段枚举是固定的，这里给出游戏内通用叫法，避免界面落到「小叶」这种简写。
+ */
+const GENERIC_PHASE_NAMES: Record<number, string> = {
+    1: '种子',
+    2: '发芽',
+    3: '小叶子',
+    4: '大叶子',
+    5: '开花',
+    6: '成熟',
+    7: '枯死',
+};
+
+/**
  * phases 是从当前阶段开始的配置后缀，因此当前配置下标等于：
  * grow_phases 总数 - 服务端剩余 phases 数。响应 phase 只表示生长中/成熟/枯死
  * 等粗状态，phase_id 是详细阶段类型，二者都不能直接作为配置数组下标。
@@ -497,7 +540,7 @@ function convertServerPhaseToClient(phases: any[], serverPhaseInfo: any, plantId
         phase: clientPhase,
         phaseName: serverPhase === PlantPhase.DEAD
             ? PHASE_NAMES[PlantPhase.DEAD]
-            : (configuredPhase && configuredPhase.name) || PHASE_NAMES[clientPhase],
+            : (configuredPhase && configuredPhase.name) || GENERIC_PHASE_NAMES[clientPhase] || PHASE_NAMES[clientPhase],
     };
 }
 
