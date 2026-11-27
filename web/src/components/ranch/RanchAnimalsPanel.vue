@@ -34,7 +34,7 @@ const penGroups = computed(() => {
   }
   return [...groups.values()]
     .sort((a, b) => (PEN_ORDER[a.type] ?? 9) - (PEN_ORDER[b.type] ?? 9) || a.type - b.type)
-    .map(group => ({ ...group, animals: [...group.animals].sort((a, b) => (Number(a.slot) || 0) - (Number(b.slot) || 0) || Number(a.id) - Number(b.id)) }))
+    .map(group => ({ ...group, scopedFeed: group.type === 6 || group.type === 7, animals: [...group.animals].sort((a, b) => (Number(a.slot) || 0) - (Number(b.slot) || 0) || Number(a.id) - Number(b.id)) }))
 })
 const capacity = computed(() => pens.value.reduce((sum, f) => sum + (Number(f.ranch.capacity) || 0), 0))
 const shelves = computed(() => pens.value.flatMap(f => f.ranch.shelves.filter((s: any) => s.canCollect).map((s: any) => ({ ...s, pen: f.name, key: `${f.id}:${s.slot}` }))))
@@ -79,6 +79,32 @@ const feedHint = computed(() => {
   return undefined
 })
 
+/**
+ * 按栏舍拆分喂养：窝（6）、棚（7）各一个入口，顶部「一键喂养」仍是全部。
+ * 每个分组独立判断可喂养只数和罐头可用性，避免窝没得喂时把棚的入口也一起禁掉。
+ */
+function groupFeedable(group: { animals: any[] }) {
+  return group.animals.filter((animal: any) => animal.canFeed)
+}
+/** 本组是否还有能用普通罐头的动物；全都用过时菜单里的普通罐头选项会置灰。 */
+function groupCanUseNormal(group: { animals: any[] }) {
+  return groupFeedable(group).some((animal: any) => !animal.limitedCanUsed)
+}
+function groupFeedHint(group: { name: string, animals: any[] }) {
+  if (busyHint.value)
+    return busyHint.value
+  const list = groupFeedable(group)
+  if (!list.length)
+    return `${group.name}里没有可喂养的动物`
+  const canUseNormal = groupCanUseNormal(group)
+  if (!buckets.value.some(bucket => Number(bucket.seconds) > 0 && (bucket.id === 7004 || canUseNormal))) {
+    return buckets.value.some(bucket => Number(bucket.seconds) > 0)
+      ? '普通罐头本轮已用，有机罐头不足'
+      : '罐头桶可用时长不足'
+  }
+  return undefined
+}
+
 const summary = computed(() => [
   { key: 'harvest', label: '可收获', icon: 'i-carbon-wheat text-amber-600 dark:text-amber-400', value: animals.value.filter(({ animal }) => animal.canHarvest).length },
   { key: 'produce', label: '可生产', icon: 'i-carbon-circle-dash text-green-600 dark:text-green-400', value: animals.value.filter(({ animal }) => animal.canProduce).length },
@@ -116,7 +142,7 @@ function target(animal: any) {
               <span class="i-carbon-clean" />一键清理
             </NButton>
             <RanchFeedMenu :buckets="buckets" :limited-can-used="normalCanUsed" :disabled="!!feedHint" @feed="(bucketType, produceAfterFeed) => requestDirect('feed', { all: true, bucketType, produceAfterFeed })">
-              <NButton aria-haspopup="menu" :disabled="!!feedHint" :title="feedHint">
+              <NButton aria-haspopup="menu" aria-label="一键喂养全部动物" :disabled="!!feedHint" :title="feedHint || '喂养窝和棚里全部可喂养的动物'">
                 <span class="i-carbon-time" aria-hidden="true" />一键喂养
               </NButton>
             </RanchFeedMenu>
@@ -163,6 +189,25 @@ function target(animal: any) {
             <section v-for="group in penGroups" :key="group.type" class="ranch-pen" :aria-label="`${group.name}的动物`">
               <header class="ranch-pen__head">
                 <i aria-hidden="true" /><h4>{{ group.name }}</h4><span>{{ group.count }} / {{ group.capacity }}</span>
+                <div v-if="group.scopedFeed" class="ranch-pen__feed">
+                  <RanchFeedMenu
+                    :buckets="buckets"
+                    :limited-can-used="!groupCanUseNormal(group)"
+                    :disabled="!!groupFeedHint(group)"
+                    @feed="(bucketType, produceAfterFeed) => requestDirect('feed', { all: true, penType: group.type, bucketType, produceAfterFeed })"
+                  >
+                    <button
+                      type="button"
+                      class="ranch-pen__feed-btn"
+                      aria-haspopup="menu"
+                      :aria-label="`一键喂养${group.name}的动物`"
+                      :disabled="!!groupFeedHint(group)"
+                      :title="groupFeedHint(group) || `只喂养${group.name}里可喂养的动物`"
+                    >
+                      <span class="i-carbon-time" aria-hidden="true" />一键喂养
+                    </button>
+                  </RanchFeedMenu>
+                </div>
               </header>
               <div v-if="group.animals.length" class="ranch-grid">
                 <RanchAnimalCard
@@ -326,6 +371,40 @@ function target(animal: any) {
   color: var(--ui-subtle);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
+}
+
+/* 分组喂养入口：贴右对齐，与标题的色标/名称形成「这一组」的视觉归属。 */
+.ranch-pen__feed {
+  margin-left: auto;
+}
+
+.ranch-pen__feed-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--ui-border);
+  border-radius: 999px;
+  background: var(--ui-surface-soft);
+  color: var(--ui-muted);
+  font-size: 12px;
+  font-weight: var(--fw-500);
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.ranch-pen__feed-btn:hover:not(:disabled) {
+  border-color: var(--ui-primary);
+  color: var(--ui-primary);
+}
+
+.ranch-pen__feed-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .ranch-pen__empty {

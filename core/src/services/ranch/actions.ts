@@ -24,8 +24,21 @@ const LABELS: Record<string, string> = {
     release: '放生动物',
 };
 
+/** 栏舍类型：窝（6）、棚（7），与协议里的 module_type 一致。 */
+const PEN_MODULE_TYPES: Record<number, string> = { 6: '窝', 7: '棚' };
+const PEN_TYPE_ALL = 0;
+
+/** input.penType 只接受 6/7，其余值一律当参数错误，避免静默退化成「全部」。 */
+function resolvePenType(input: any): number {
+    const penType = Number(input?.penType) || PEN_TYPE_ALL;
+    if (penType !== PEN_TYPE_ALL && !PEN_MODULE_TYPES[penType]) throw error('INVALID_ARGUMENT', '请选择窝或棚');
+    return penType;
+}
+
 function selectedAnimals(raw: any, input: any, eligible: (animal: any) => boolean): any[] {
-    const all = raw.cells.facilities.flatMap((facility: any) => facility.ranch?.animals || []);
+    const penType = resolvePenType(input);
+    const facilities = penType ? raw.cells.facilities.filter((facility: any) => Number(facility.module_type) === penType) : raw.cells.facilities;
+    const all = facilities.flatMap((facility: any) => facility.ranch?.animals || []);
     if (input.all === true) return all.filter(eligible);
     const ranchId = positiveId(input.ranchId, '牧场设施');
     const animalId = positiveCount(input.animalId);
@@ -168,14 +181,16 @@ async function planAction(action: string, input: any, raw: any, produceTargets?:
     } else if (action === 'feed') {
         const bucketType = Number(input.bucketType);
         if (![1, 2].includes(bucketType)) throw error('INVALID_ARGUMENT', '请选择有机或普通罐头');
+        // 喂养可按栏舍拆分：penType 6/7 只喂窝或只喂棚，不传则两类一起喂。
+        const scope = PEN_MODULE_TYPES[resolvePenType(input)] || '';
         const feedable = selectedAnimals(raw, input, () => true).filter(animal => animal.can_feed);
         const unused = feedable.filter(animal => bucketType === 1 || !animal.limited_can_used);
         const strategy = feedStage ?? (bucketType === 2 && input.normalStage === 'longest' ? 'longest' : 'any');
         const nowSeconds = getServerTimeSec();
         const animals = unused.filter(animal => matchesFeedStage(animal, strategy, nowSeconds * 1000));
-        if (!animals.length) plan.message = feedable.length ? '普通罐头本轮已使用' : '当前没有可喂养的动物';
+        if (!animals.length) plan.message = feedable.length ? `${scope ? `${scope}里` : ''}普通罐头本轮已使用` : `${scope ? `${scope}里` : '当前'}没有可喂养的动物`;
         if (unused.length && !animals.length) {
-            plan.message = strategy === 'longest' ? '当前没有处于最长生长阶段的可喂养动物' : '当前没有符合罐头使用时机的动物';
+            plan.message = strategy === 'longest' ? `${scope ? `${scope}里` : '当前'}没有处于最长生长阶段的可喂养动物` : `${scope ? `${scope}里` : '当前'}没有符合罐头使用时机的动物`;
         }
         plan.payload = { targets: animalRefs(animals), bucket_type: bucketType };
         const maxSeconds = animals.reduce((sum, animal) => {
