@@ -37,6 +37,8 @@ function printUsage() {
   --source <dir>        微信小程序反编译源码目录
   --concurrency <n>     下载并发数，1-32（默认 ${DEFAULT_CONCURRENCY}）
   --retries <n>         可重试错误的额外重试次数，0-10（默认 ${DEFAULT_RETRIES}）
+  --extra-items <列表>  补录不在 ItemInfo.json 里的条目，格式 id:asset_name，逗号分隔
+                        例：--extra-items "20307:Crop_307,40307:Crop_307,1040307:gold/Crop_307"
   --help, -h            显示帮助
 
 默认值：
@@ -62,6 +64,7 @@ function parseArgs(argv) {
         retries: DEFAULT_RETRIES,
         cdnServer: '',
         bundleVersion: '',
+        extraItems: '',
     };
     for (let i = 0; i < argv.length; i += 1) {
         const arg = argv[i];
@@ -69,7 +72,7 @@ function parseArgs(argv) {
             printUsage();
             process.exit(0);
         }
-        if (!['--input', '--output', '--source', '--concurrency', '--retries', '--cdn-server', '--bundle-version'].includes(arg)) {
+        if (!['--input', '--output', '--source', '--concurrency', '--retries', '--cdn-server', '--bundle-version', '--extra-items'].includes(arg)) {
             throw new Error(`未知参数: ${arg}`);
         }
         const value = argv[++i];
@@ -78,6 +81,7 @@ function parseArgs(argv) {
         else if (arg === '--retries') options.retries = parseIntegerOption(value, arg, 0, 10);
         else if (arg === '--cdn-server') options.cdnServer = value;
         else if (arg === '--bundle-version') options.bundleVersion = value;
+        else if (arg === '--extra-items') options.extraItems = value;
         else options[arg.slice(2)] = path.resolve(value);
     }
     if (Boolean(options.cdnServer) !== Boolean(options.bundleVersion)) {
@@ -818,6 +822,24 @@ async function main() {
     const startedAt = new Date().toISOString();
     const options = parseArgs(process.argv.slice(2));
     const inputs = loadInputs(options.input);
+    // 活动作物不在 ItemInfo.json 里，允许从命令行补 <id>:<asset_name>（如 40307:Crop_307），
+    // 走的仍是同一套 model/v4/<asset_name>_Seed 解析规则。
+    if (options.extraItems) {
+        for (const spec of String(options.extraItems).split(',')) {
+            const trimmed = spec.trim();
+            if (!trimmed) continue;
+            const sep = trimmed.indexOf(':');
+            if (sep <= 0) throw new Error(`--extra-items 格式应为 <id>:<asset_name>，实际: ${trimmed}`);
+            const id = Number(trimmed.slice(0, sep));
+            const assetName = trimmed.slice(sep + 1).trim();
+            validatePositiveId(id, '--extra-items id');
+            if (!assetName) throw new Error(`--extra-items 缺少 asset_name: ${trimmed}`);
+            if (inputs.itemById.has(id)) continue;
+            const item = { id, type: 0, name: '', asset_name: assetName, icon_res: null, bundle_name: null };
+            inputs.itemInput.value.push(item);
+            inputs.itemById.set(id, { item, index: inputs.itemInput.value.length - 1 });
+        }
+    }
     const settings = options.cdnServer
         ? settingsFromCli(options.cdnServer, options.bundleVersion)
         : readSettings(options.source);

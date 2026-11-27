@@ -253,9 +253,13 @@ interface SeedOptionItem {
   seedId: number
   name: string
   requiredLevel: number
-  price: number
+  price: number | null
   locked?: boolean
   soldOut?: boolean
+  /** false 表示不在种子商店里，只能靠背包存货（活动种子） */
+  purchasable?: boolean
+  /** 活动补录的临时种子 */
+  activity?: boolean
 }
 
 const seedOptions = ref<SeedOptionItem[]>([])
@@ -695,11 +699,20 @@ watch(() => [localStrategySettings.value.plantingStrategy, currentAccountId.valu
 
 const preferredSeedOptions = computed(() => {
   const options: { label: string, value: number, disabled?: boolean }[] = [{ label: '自动选择', value: 0, disabled: false }]
-  options.push(...seedOptions.value.map(seed => ({
-    label: `${seed.requiredLevel}级 ${seed.name} (${seed.price}金)`,
-    value: seed.seedId,
-    disabled: seed.locked || seed.soldOut,
-  })))
+  // 活动种子买不到，只在「背包种子优先」里通过重排背包消耗顺序生效；
+  // 纯商店策略下不展示，避免选出个点了没反应的选项。
+  const allowActivitySeeds = localStrategySettings.value.plantingStrategy === 'bag_priority'
+  for (const seed of seedOptions.value) {
+    if (seed.activity && !allowActivitySeeds)
+      continue
+    options.push({
+      label: seed.activity
+        ? `${seed.name}（活动·仅背包）`
+        : `${seed.requiredLevel}级 ${seed.name} (${seed.price}金)`,
+      value: seed.seedId,
+      disabled: seed.locked || seed.soldOut,
+    })
+  }
   return options
 })
 
@@ -723,7 +736,9 @@ watch(() => [
     strategy = fallbackStrategy || 'level'
     if (strategy === 'preferred') {
       const seed = preferredSeedId > 0 ? currentSeeds.find(item => item.seedId === preferredSeedId) : undefined
-      strategyPreviewLabel.value = seed ? `${seed.requiredLevel}级 ${seed.name}` : '未选择优先种子'
+      strategyPreviewLabel.value = seed
+        ? (seed.activity ? `${seed.name}（活动）` : `${seed.requiredLevel}级 ${seed.name}`)
+        : '未选择优先种子'
       return
     }
   }

@@ -35,6 +35,10 @@ export interface ActivityCropOverride {
     goldenItemId?: number;
     /** 变异（黄金）版展示名 */
     goldenName?: string;
+    /** 占地格数，缺省 1；自动种植用它算地块布局 */
+    size?: number;
+    /** 种植所需土地等级，缺省 0；服务端仍会再校验一次 */
+    landLevelNeed?: number;
 }
 
 /**
@@ -60,6 +64,8 @@ const ACTIVITY_CROP_LIST: ActivityCropOverride[] = [
         goldenPlantId: 1120307,
         goldenItemId: 1040307,
         goldenName: '黄金·红薯',
+        size: 1,
+        landLevelNeed: 0,
     },
 ];
 
@@ -130,4 +136,19 @@ export function getActivityItemImage(itemId: number | string): string {
 
 export function getActivityItems(): ActivityItemOverride[] {
     return ACTIVITY_ITEM_LIST.map(item => ({ ...item }));
+}
+
+/** 活动作物列表（不含黄金版的派生条目），用于构建合成 Plant。 */
+export function getActivityCrops(): ActivityCropOverride[] {
+    return ACTIVITY_CROP_LIST.map(crop => ({ ...crop }));
+}
+
+/**
+ * 是否是活动作物的种子。
+ * 自动种植用它把活动种子排在普通种子前面（活动有期限，不种就浪费），
+ * 但不会因此进入 getAllSeeds()。
+ */
+export function isActivitySeed(seedId: number | string): boolean {
+    const id = Number(seedId) || 0;
+    return id > 0 && bySeedId.has(id);
 }

@@ -258,6 +258,121 @@ DTO 层可直接用假 `BagReply` 跑一遍（不需要登录），预期输出�
 
 ---
 
+## 活动作物参与自动种植（红薯种子 20307）
+
+上一节只修了「能看见」，这一节修「能种」：背包里有红薯种子，但自动种植始终不种。
+
+### 根因
+
+`services/warehouse.ts` 的 `getBagSeeds()` 用作物配置过滤背包：
+
+```ts
+const plant = getPlantBySeedId(seedId);
+if (!plant) continue;        // ← 20307 在 Plant.json 里没有，直接丢弃
+```
+
+红薯是活动作物，由服务端下发，永远不在 `Plant.json` 里，所以这一步就被静默过滤掉了，
+后面的优先级排序、地块匹配、种植请求根本轮不到它。
+
+### 改动
+
+| 路径 | 性质 | 说明 |
+| --- | --- | --- |
+| `core/src/config/activity-crops.ts` | 扩展 | `ActivityCropOverride` 增加 `size` / `landLevelNeed`；新增 `getActivityCrops()`、`isActivitySeed()` |
+| `core/src/config/gameConfig.ts` | 挂载点 | 新增 `activityPlantMap` + `registerActivityPlants()`，`getPlantBySeedId()` 查不到官方配置时返回合成 Plant；导出 `isActivitySeed` |
+| `core/src/services/farm/planting.ts` | 排序 | `sortBagSeedsForPlanting()` 让未配置优先级的活动种子排在「显式优先级之后、其他种子之前」 |
+| `core/tests/activity-crop-planting.test.js` | 新增 | 用假 `BagReply` 跑真实 `getBagSeeds()`，锁住「红薯种子可种、果实不误判」 |
+
+### 关键取舍
+
+- **合成 Plant 只放进 `activityPlantMap`，不进 `seedToPlant`**：`getAllSeeds()` 仍只读 `Plant.json`，
+  商店兜底列表、图鉴、培育策略不会被活动种子污染。
+- **种植请求只发 `seedId` + `landIds`**（服务端校验），本地只需 `size` 用于地块布局，故 `size` 缺省 1、
+  `landLevelNeed` 缺省 0，不编造未知的生长参数。
+- **排序策略**：活动有时限，留在背包会作废，所以未显式配置优先级时排在普通种子前面；
+  用户在设置里配了种子优先级的，仍以用户配置为准（活动种子排在显式列表之后）。
+
+### 复核
+
+```bash
+cd core && npx tsc --noEmit && npx tsc && node --test tests/activity-crop-planting.test.js
+```
+
+预期：
+
+```text
+--- getPlantBySeedId ---
+20307 => name=红薯 size=1 landNeed=0 fruit=40307
+--- getBagSeeds（真实逻辑 + 假协议）---
+   20307 红薯 x5 lv0 size1
+   20002 白萝卜 x12 lv1 size1
+红薯种子被识别为可种: true
+果实 40307 未被误判为种子: true
+```
+
+### 官方贴图（待补）
+
+背包图标与种子的资源名按官方命名规律可确定：
+
+```text
+40307 / 20307  -> asset_name = Crop_307
+1040307        -> asset_name = gold/Crop_307    （对照 40304=Crop_304、1040304=gold/Crop_304）
+```
+
+但这两个 sprite 在 `plant` bundle 的 `model/v4/...` 下（`mainscene` / `extraRes` 里只有 `model/v3` 场景资源），
+而 bundle 版本号只存在于客户端 `settings.json`，需要一次抓包获取。拿到后：
+
+```bash
+# 只下这 3 张：造一个只含活动条目的临时配置目录，避免重下 1400+ 张既有图
+mkdir -p .tmp-activity-cfg
+cat > .tmp-activity-cfg/ItemInfo.json <<'EOF'
+[{"id":20307,"asset_name":"Crop_307"},{"id":40307,"asset_name":"Crop_307"},{"id":1040307,"asset_name":"gold/Crop_307"}]
+EOF
+echo '[]' > .tmp-activity-cfg/Plant.json
+
+node tools/download-game-images.js \
+  --input .tmp-activity-cfg \
+  --output core/src/gameConfig/seed_images_named/seed_images \
+  --cdn-server https://cdn-resource.nqf.qq.com/release/ \
+  --bundle-version plant=<抓包得到的版本>
+```
+
+也可以在读取真实 `ItemInfo.json` 时用 `--extra-items "20307:Crop_307,40307:Crop_307,1040307:gold/Crop_307"`
+补条目——但那样会把既有 1400+ 张图一起重下，只有需要全量刷新时才划算。
+
+`--extra-items` 是本轮给工具新增的参数，格式 `<id>:<asset_name>`，逗号分隔。
+
+---
+
+## 活动种子进入「优先种植种子」下拉
+
+上一节让红薯种子能种了，但用户没法指定「优先种它」：设置页的「优先种植种子」
+下拉数据源是 `/api/seeds`（`getAvailableSeeds()`），而它只遍历种子商店货架，
+活动种子买不到、自然不在列表里。
+
+### 改动
+
+| 路径 | 性质 | 说明 |
+| --- | --- | --- |
+| `core/src/services/farm/planting.ts` | 扩展 | `getAvailableSeeds()` 末尾追加活动种子条目（`purchasable:false` / `goodsId:0` / `price:null` / `activity:true`），并让它们固定排在商店种子之后 |
+| `web/src/views/Settings.vue` | 展示 | `SeedOptionItem` 增加 `purchasable`/`activity`；`preferredSeedOptions` 把活动种子显示为「红薯（活动·仅背包）」，纯商店策略下不展示；`strategyPreviewLabel` 不再拼「0级」 |
+| `core/tests/activity-crop-planting.test.js` | 扩展 | 补 2 条：`/api/seeds` 附带不可购买的活动种子且排最后；显式优先级能把红薯排到背包顺序第一位 |
+
+### 生效路径
+
+```
+设置页「优先种植种子」选 红薯
+  → handlePreferredSeedChange() → sortBagSeedsByFallbackStrategy('preferred')
+  → bagSeedPriority 里 20307 排第一
+  → plantFromBagSeeds() 按该顺序消耗背包种子
+```
+
+注意只有 **种植策略 = 背包种子优先**（`bag_priority`）时才展示活动种子：
+纯商店策略（`preferred`）走 `findBestSeed()` 买种子，活动种子不可购买，
+放进去只会变成「选了没反应」的假选项。
+
+---
+
 ## 统计
 
 ```bash

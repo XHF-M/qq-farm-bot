@@ -18,6 +18,8 @@ const {
     getActivityItemById,
     getActivityItemImage,
     getActivityItems,
+    getActivityCrops,
+    isActivitySeed,
 } = require('./activity-crops');
 
 interface RoleLevelItem {
@@ -207,6 +209,51 @@ function registerActivityItems(): void {
             rarity_color: null,
             jumps: '',
             ware_scale: null,
+        });
+    }
+}
+
+/**
+ * 活动作物的 Plant 合成条目（按种子 ID 索引）。
+ *
+ * 只用于「这个种子能不能种」的判断（getBagSeeds 会 `getPlantBySeedId` 过滤），
+ * 刻意不放进 seedToPlant，避免污染 getAllSeeds()（商店兜底列表、图鉴、培育策略）。
+ *
+ * 种植请求只发 seedId + landIds，真正的合法性由服务端校验，这里只补最小可用字段。
+ */
+const activityPlantMap = new Map<number, PlantItem>();
+
+function registerActivityPlants(): void {
+    for (const crop of getActivityCrops()) {
+        const seedId = Number(crop.seedId) || 0;
+        if (seedId <= 0 || seedToPlant.has(seedId)) continue;
+        activityPlantMap.set(seedId, {
+            id: Number(crop.plantId) || 0,
+            name: crop.name,
+            mutant_effect_plant: null,
+            fruit: { id: Number(crop.fruitId) || 0, count: 1 },
+            seed_id: seedId,
+            land_level_need: Math.max(0, Number(crop.landLevelNeed) || 0),
+            seasons: 1,
+            grow_phases: '',
+            exp: 0,
+            special_fruit: null,
+            size: Math.max(1, Number(crop.size) || 1),
+            offsetPosition: { x: 0, y: 0 },
+            mutantEffectScale: { x: 1, y: 1 },
+            harvestOffsetPosition: { x: 0, y: 0 },
+            harvestRandom: null,
+            harvestAllSpineRes: null,
+            harvestAllOffsetPosition: null,
+            harvestAniName: '',
+            all_state_spine: null,
+            mature_effect: '',
+            mature_effect_offset: { x: 0, y: 0 },
+            rare_plant_light_pos: null,
+            exp_root: 0,
+            exp_alter: 0,
+            fruit_root: 0,
+            fruit_alter: 0,
         });
     }
 }
@@ -413,7 +460,9 @@ function getPlantById(plantId: number): PlantItem | undefined {
 }
 
 function getPlantBySeedId(seedId: number): PlantItem | undefined {
-    return seedToPlant.get(seedId);
+    const id = Number(seedId) || 0;
+    // 活动作物不走 Plant.json，用合成条目兜底，让背包种子识别（getBagSeeds）能看到它。
+    return seedToPlant.get(id) || activityPlantMap.get(id);
 }
 
 function getPlantName(plantId: number): string {
@@ -806,6 +855,7 @@ function getMutantDisplayPlantId(plantId: number | string, mutantIds: Array<numb
 // 启动时加载配置：官方配置优先，活动补录只补 ItemInfo 里没有的 ID
 loadConfigs();
 registerActivityItems();
+registerActivityPlants();
 
 module.exports = {
     loadConfigs,
@@ -817,6 +867,7 @@ module.exports = {
     // 植物配置
     getPlantById,
     getPlantBySeedId,
+    isActivitySeed,
     getPlantName,
     getPlantNameBySeedId,
     getPlantGrowTime,

@@ -5,7 +5,7 @@ export {};
 
 const protobuf = require('protobufjs');
 const { performance } = require('node:perf_hooks');
-const { getPlantNameBySeedId, formatGrowTime, getPlantGrowTime, getAllSeeds, getPlantBySeedId } = require('../../config/gameConfig');
+const { getPlantNameBySeedId, formatGrowTime, getPlantGrowTime, getAllSeeds, getPlantBySeedId, isActivitySeed } = require('../../config/gameConfig');
 const { getPreferredSeed, getAutomation, getPlantingStrategy, getBagSeedPriority, getBagSeedMultiLandReservationEnabled, getBagSeedLandTypes, getBagSeedFallbackStrategy, getPlantDelaySeconds } = require('../../models/store');
 const { getUserState, getWsErrorState, sendMsgAsync } = require('../../utils/network');
 const { toNum, getServerTimeSec, log, logWarn, sleep } = require('../../utils/utils');
@@ -242,10 +242,14 @@ function sortBagSeedsForPlanting(bagSeeds: any[], priorityList: any[] | undefine
         const id = Number(seedId);
         if (id > 0) indexMap.set(id, index);
     });
+    // 用户显式配过优先级就照办；没配的活动种子排在「显式列表之后、其他未配置种子之前」，
+    // 因为活动有期限，留在背包里会作废。
+    const activityIndex = priority.length;
 
     return [...(Array.isArray(bagSeeds) ? bagSeeds : [])].sort((a: any, b: any) => {
-        const aIndex = indexMap.has(a.seedId) ? indexMap.get(a.seedId)! : Number.MAX_SAFE_INTEGER;
-        const bIndex = indexMap.has(b.seedId) ? indexMap.get(b.seedId)! : Number.MAX_SAFE_INTEGER;
+        const fallbackIndex = (seedId: any): number => (isActivitySeed(seedId) ? activityIndex : Number.MAX_SAFE_INTEGER);
+        const aIndex = indexMap.has(a.seedId) ? indexMap.get(a.seedId)! : fallbackIndex(a.seedId);
+        const bIndex = indexMap.has(b.seedId) ? indexMap.get(b.seedId)! : fallbackIndex(b.seedId);
         if (aIndex !== bIndex) return aIndex - bIndex;
 
         const aLevel = Number(a.requiredLevel || 0);
@@ -656,7 +660,40 @@ async function getAvailableSeeds(propagateErrors: boolean = false): Promise<any[
             soldOut: false,
         }));
     }
+    // 活动种子（如红薯 20307）只在活动发放，种子商店里没有，但「优先种植种子」
+    // 需要能选中它，才能配合背包优先顺序把它排到最前。
+    // purchasable:false 明确标记"不可购买"，避免前端把它当商店商品去下单。
+    try {
+        const { getActivityCrops } = require('../../config/activity-crops');
+        const knownSeedIds = new Set<number>(list.map((entry: any) => toNum(entry.seedId)));
+        for (const crop of getActivityCrops()) {
+            const seedId = toNum(crop.seedId);
+            if (seedId <= 0 || knownSeedIds.has(seedId)) continue;
+            knownSeedIds.add(seedId);
+            list.push({
+                seedId,
+                goodsId: 0,
+                name: crop.name,
+                price: null,
+                itemCount: 1,
+                remainingPurchaseCount: null,
+                requiredLevel: Math.max(0, toNum(crop.landLevelNeed)),
+                requiresUnlockCard: false,
+                locked: false,
+                soldOut: false,
+                purchasable: false,
+                activity: true,
+            });
+        }
+    } catch {
+        // 补录表不可用不影响商店种子列表本身
+    }
+
     return list.sort((a: any, b: any) => {
+        // 活动种子固定排在商店种子之后，避免它跑到选种列表最前面造成误会
+        const aActivity = a.purchasable === false ? 1 : 0;
+        const bActivity = b.purchasable === false ? 1 : 0;
+        if (aActivity !== bActivity) return aActivity - bActivity;
         const av = a.requiredLevel ?? 9999;
         const bv = b.requiredLevel ?? 9999;
         return av - bv;
